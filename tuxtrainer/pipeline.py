@@ -4,10 +4,10 @@ Orchestration pipeline — end-to-end fine-tuning from PDFs to Ollama.
 This is the main entry point that coordinates:
   1. PDF extraction and dataset preparation
   2. Master model hyperparameter selection
-  3. Model fine-tuning (LoRA / QLoRA)
-  4. Adapter merging
-  5. GGUF conversion
-  6. Ollama model creation and push
+  3. Model fine-tuning (LoRA / QLoRA) on a 4-bit base
+  4. GGUF export via Unsloth's native ``save_pretrained_gguf``
+     (merge + dequantize + llama.cpp convert + quantize all in one call)
+  5. Ollama model creation and push
 
 Usage::
 
@@ -25,6 +25,7 @@ Usage::
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import time
@@ -33,18 +34,16 @@ from typing import Optional
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from tuxtrainer.config import FinetuneConfig, FinetuneMethod
+from tuxtrainer.config import FinetuneConfig
 from tuxtrainer.finetuner import (
     apply_lora_adapters,
     format_dataset_for_training,
     load_model_and_tokenizer,
-    merge_adapter_to_base,
+    save_gguf_unsloth,
     train,
 )
-from tuxtrainer.gguf_converter import GGUFConverter
 from tuxtrainer.hyperparam_selector import HyperparamSelector
 from tuxtrainer.ollama_pusher import OllamaPusher
 from tuxtrainer.pdf_processor import PDFProcessor
@@ -71,6 +70,10 @@ class FinetunePipeline:
         self.config = config
         self._start_time: float = 0
         self._stage_times: list[tuple[str, float]] = []
+        # Kept alive between the training and GGUF-export stages so Unsloth
+        # can convert straight from the in-memory LoRA-on-4bit model.
+        self._model = None
+        self._tokenizer = None
 
     def run(self) -> str:
         """Execute the full fine-tuning pipeline.
@@ -96,13 +99,10 @@ class FinetunePipeline:
         # ── Stage 3: Fine-tune ─────────────────────────────────────────
         adapter_path = self._stage("Fine-tuning", self._finetune, dataset, hyperparams)
 
-        # ── Stage 4: Merge adapters ────────────────────────────────────
-        merged_dir = self._stage("Merging", self._merge, adapter_path)
+        # ── Stage 4: GGUF export (Unsloth) ─────────────────────────────
+        gguf_path = self._stage("GGUF Export", self._export_gguf, adapter_path)
 
-        # ── Stage 5: Convert to GGUF ───────────────────────────────────
-        gguf_path = self._stage("GGUF Conversion", self._convert_to_gguf, merged_dir)
-
-        # ── Stage 6: Push to Ollama (optional) ─────────────────────────
+        # ── Stage 5: Push to Ollama (optional) ─────────────────────────
         if self.config.skip_ollama:
             model_name = str(gguf_path)
         else:
@@ -140,7 +140,6 @@ class FinetunePipeline:
 
         dataset, stats = processor.process(pdf_paths)
 
-        # Save dataset stats for the master model
         stats_path = Path(self.config.output_dir) / "dataset_stats.json"
         stats_path.parent.mkdir(parents=True, exist_ok=True)
         stats_path.write_text(
@@ -155,10 +154,8 @@ class FinetunePipeline:
         selector = HyperparamSelector(self.config)
         hyperparams = selector.select(stats)
 
-        # Update config with selected hyperparams
         self.config.hyperparams = hyperparams
 
-        # Save selected hyperparams
         hp_path = Path(self.config.output_dir) / "selected_hyperparams.json"
         hp_path.write_text(
             hyperparams.model_dump_json(indent=2),
@@ -168,8 +165,12 @@ class FinetunePipeline:
         return hyperparams
 
     def _finetune(self, dataset, hyperparams):
-        """Stage 3: Load model, apply LoRA, and train."""
-        # Load model and tokenizer
+        """Stage 3: Load model, apply LoRA, and train.
+
+        Keeps references to the Unsloth-wrapped model and tokenizer on the
+        pipeline instance so Stage 4 can feed them straight into
+        ``save_pretrained_gguf`` without reloading the base.
+        """
         model, tokenizer = load_model_and_tokenizer(
             model_id=self.config.model_id,
             max_seq_length=hyperparams.max_seq_length,
@@ -177,7 +178,6 @@ class FinetunePipeline:
             use_unsloth=self.config.use_unsloth,
         )
 
-        # Apply LoRA adapters
         model = apply_lora_adapters(
             model,
             hyperparams,
@@ -185,52 +185,54 @@ class FinetunePipeline:
             model_id=self.config.model_id,
         )
 
-        # Format dataset
         tokenised_dataset = format_dataset_for_training(
             dataset, tokenizer, hyperparams, self.config.data_format,
         )
 
-        # Split into train/eval
         split = self.config.train_test_split
         if split < 1.0:
             split_dataset = tokenised_dataset.train_test_split(
                 train_size=split, seed=self.config.seed,
             )
             tokenised_dataset = split_dataset["train"]
-            eval_dataset = split_dataset["test"]
-        else:
-            eval_dataset = None
 
-        # Train
         adapter_path = train(model, tokenizer, tokenised_dataset, self.config)
+
+        # Preserve refs for the GGUF export stage.
+        self._model = model
+        self._tokenizer = tokenizer
 
         return adapter_path
 
-    def _merge(self, adapter_path):
-        """Stage 4: Merge LoRA adapters back into the base model."""
-        merged_dir = merge_adapter_to_base(
-            adapter_path=adapter_path,
-            model_id=self.config.model_id,
-            output_dir=Path(self.config.output_dir),
-            max_seq_length=self.config.hyperparams.max_seq_length,
-        )
-        return merged_dir
+    def _export_gguf(self, adapter_path):
+        """Stage 4: Export to GGUF via Unsloth's native save_pretrained_gguf.
 
-    def _convert_to_gguf(self, merged_dir):
-        """Stage 5: Convert the merged model to GGUF format."""
-        converter = GGUFConverter(
-            quantisation=self.config.quantisation,
+        Merges the LoRA adapter, dequantizes the 4-bit base, runs llama.cpp
+        conversion, and quantizes to the requested level — all inside
+        Unsloth.  No intermediate merged fp16 directory is produced.
+        """
+        gguf_path = save_gguf_unsloth(
+            model=self._model,
+            tokenizer=self._tokenizer,
+            config=self.config,
+            adapter_path=adapter_path,
         )
-        model_name = self.config.get_ollama_model_name()
-        gguf_path = converter.convert(
-            model_dir=merged_dir,
-            output_dir=Path(self.config.output_dir) / "gguf",
-            model_name=model_name,
-        )
+
+        # Release VRAM before the Ollama push stage (which can load more models).
+        self._model = None
+        self._tokenizer = None
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+
         return gguf_path
 
     def _push_to_ollama(self, gguf_path):
-        """Stage 6: Create the model in Ollama and optionally push to registry."""
+        """Stage 5: Create the model in Ollama and optionally push to registry."""
         pusher = OllamaPusher(self.config)
         model_name = pusher.push(gguf_path)
         return model_name
@@ -268,10 +270,11 @@ class FinetunePipeline:
             f"[cyan]PDFs[/cyan]:       {len(pdf_paths)} file(s)\n"
             f"[cyan]Auto HP[/cyan]:    {self.config.auto_hyperparams}\n"
             f"[cyan]Master[/cyan]:     {self.config.master_model} ({self.config.master_backend})\n"
-            f"[cyan]Quant[/cyan]:      {self.config.quantisation}\n"
+            f"[cyan]Quant[/cyan]:      {self.config.get_quantization_method()}\n"
             f"[cyan]Ollama[/cyan]:     {ollama_status}\n"
             f"[cyan]Namespace[/cyan]:  {namespace}\n"
-            f"[cyan]Output[/cyan]:     {self.config.output_dir}"
+            f"[cyan]Output[/cyan]:     {self.config.output_dir}\n"
+            f"[cyan]GGUF out[/cyan]:   {self.config.get_gguf_output_dir()}"
         )
 
     def _print_summary(self, model_name: str, total_time: float, gguf_path: Path) -> None:

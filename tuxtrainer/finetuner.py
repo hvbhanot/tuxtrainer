@@ -8,10 +8,19 @@ Supports:
 
 The module loads the base model, applies LoRA adapters, formats the dataset
 into the appropriate chat template, and runs SFTTrainer.
+
+The GGUF export lives in :func:`save_gguf_unsloth`, which delegates to
+Unsloth's ``save_pretrained_gguf``.  This deliberately bypasses
+``transformers.save_pretrained`` on merged 4-bit models — transformers 5.x
+introduced a ``ConversionOps`` system whose bitsandbytes dequantize op does
+not implement ``reverse_op``, so the standard HF save path raises
+``NotImplementedError``.  Unsloth runs its own merge + dequant + llama.cpp
+conversion pipeline and sidesteps the broken code path entirely.
 """
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 from pathlib import Path
@@ -20,7 +29,6 @@ from typing import Optional
 from datasets import Dataset
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from tuxtrainer.config import FinetuneConfig, FinetuneMethod, HyperParams
 
@@ -100,7 +108,6 @@ def load_model_and_tokenizer(
     token = _hf_token()
 
     try:
-        # Load tokenizer
         tokenizer = AutoTokenizer.from_pretrained(
             model_id,
             trust_remote_code=True,
@@ -111,7 +118,6 @@ def load_model_and_tokenizer(
             tokenizer.pad_token = tokenizer.eos_token
         tokenizer.padding_side = "right"
 
-        # Load model
         if method == FinetuneMethod.QLORA:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -138,7 +144,6 @@ def load_model_and_tokenizer(
         _handle_model_load_error(e, model_id)
         raise
 
-    # Enable gradient checkpointing on the base model (before LoRA)
     model.enable_input_require_grads()
 
     console.print("[green]  Model loaded[/green]")
@@ -166,7 +171,7 @@ def _load_with_unsloth(
             model_name=model_id,
             max_seq_length=max_seq_length,
             load_in_4bit=load_in_4bit,
-            dtype=None,  # Auto-detect
+            dtype=None,
             token=token,
         )
     except Exception as e:
@@ -210,9 +215,6 @@ def _default_target_modules_for_model(model) -> list[str]:
 
     _LAYER_PATTERNS = (".layers.", ".blocks.", ".h.", "layers.", "blocks.", "h.")
 
-    # Walk all modules inside transformer layers and collect local names
-    # of: (a) supported linear modules, and (b) modules that wrap supported
-    # linears (their local name is what users expect, e.g. "q_proj").
     layer_targets: dict[str, int] = {}
 
     for name, mod in model.named_modules():
@@ -221,14 +223,10 @@ def _default_target_modules_for_model(model) -> list[str]:
 
         local = name.split(".")[-1]
 
-        # Direct match: the module itself is a supported linear type
         if isinstance(mod, _SUPPORTED_LINEARS):
             layer_targets[local] = layer_targets.get(local, 0) + 1
             continue
 
-        # Wrapper detection: the module contains supported linear children
-        # but is not itself a supported type (e.g. Gemma4ClippableLinear).
-        # We want the wrapper's name (e.g. "q_proj"), NOT the inner name.
         has_linear_child = any(
             isinstance(child, _SUPPORTED_LINEARS)
             for _cn, child in mod.named_children()
@@ -236,9 +234,6 @@ def _default_target_modules_for_model(model) -> list[str]:
         if has_linear_child:
             layer_targets[local] = layer_targets.get(local, 0) + 1
 
-    # Remove overly-generic names (like "linear") if more specific names
-    # exist, since "linear" usually refers to an inner sub-module of a
-    # wrapper rather than a standalone projection.
     _GENERIC_NAMES = {"linear", "weight", "bias"}
     if layer_targets and any(n in _GENERIC_NAMES for n in layer_targets):
         specific_names = {n for n in layer_targets if n not in _GENERIC_NAMES}
@@ -246,16 +241,11 @@ def _default_target_modules_for_model(model) -> list[str]:
             for gn in _GENERIC_NAMES:
                 layer_targets.pop(gn, None)
 
-    # Remove "container" names — modules like "self_attn" and "mlp" that
-    # contain sub-modules which are already in the target set.  We only
-    # want leaf-like projection names, not parent containers.
     _CONTAINER_NAMES = {"self_attn", "self_attention", "attention", "mlp",
                         "feed_forward", "ffn", "block", "layer"}
     for cn in _CONTAINER_NAMES:
         layer_targets.pop(cn, None)
 
-    # Further filter: remove any name whose module has children that also
-    # appear in the target set (it's a container, not a leaf).
     all_names_in_model = {}
     for name, mod in model.named_modules():
         if any(pat in name for pat in _LAYER_PATTERNS):
@@ -267,7 +257,6 @@ def _default_target_modules_for_model(model) -> list[str]:
         if mod is not None:
             child_locals = {cn.split(".")[-1] for cn, _ in mod.named_children()}
             if child_locals & set(leaf_targets) and name not in child_locals:
-                # This module's children include other targets → it's a container
                 del leaf_targets[name]
 
     if layer_targets:
@@ -353,16 +342,7 @@ _MODEL_FAMILY_TARGETS: list[tuple[str, list[str]]] = [
 
 
 def guess_target_modules_from_model_id(model_id: str) -> list[str]:
-    """Guess reasonable default LoRA target modules from a HuggingFace model ID.
-
-    Uses the model family name (e.g. ``"llama"``, ``"gemma"``, ``"phi"``)
-    extracted from the model ID string to look up well-known projection names.
-    More-specific family names are matched first (e.g. ``"gemma2"`` before
-    ``"gemma"``, ``"gpt_neox"`` before ``"gpt2"``).
-
-    This is a *fallback* — the real resolution happens at apply-time via
-    ``resolve_target_modules_for_model`` which inspects the loaded model.
-    """
+    """Guess reasonable default LoRA target modules from a HuggingFace model ID."""
     model_lower = model_id.lower().replace("-", "_")
 
     for family, targets in _MODEL_FAMILY_TARGETS:
@@ -376,35 +356,14 @@ def guess_target_modules_from_model_id(model_id: str) -> list[str]:
 
 
 def resolve_target_modules_for_model(model, model_id: str, requested: list[str]) -> list[str]:
-    """Auto-detect and resolve the best LoRA target modules for a model.
-
-    This is the main entry-point called by the pipeline.  It:
-
-    1. Inspects the loaded model to discover which linear-like projections
-       exist inside the transformer layers.
-    2. If the discovered names differ from ``requested``, logs the change.
-    3. Resolves any wrapper modules (e.g. ``Gemma4ClippableLinear``) to
-       their inner supported linear layers.
-
-    Args:
-        model: The loaded HuggingFace model.
-        model_id: The HuggingFace model ID (used for logging).
-        requested: The user-specified or default target module names.
-
-    Returns:
-        A list of target module names suitable for PEFT.
-    """
+    """Auto-detect and resolve the best LoRA target modules for a model."""
     auto_detected = _default_target_modules_for_model(model)
 
-    # If the auto-detected set differs significantly from what was requested,
-    # prefer the auto-detected names (they are guaranteed to exist in the model).
     auto_set = set(auto_detected)
     req_set = set(requested)
 
     final_requested = requested
     if auto_set != req_set:
-        # Check if any of the requested names actually exist as supported
-        # modules in the model.  If fewer than half match, swap to auto-detected.
         import torch.nn as nn
         _SUPPORTED_LINEARS = [nn.Linear]
         try:
@@ -426,8 +385,6 @@ def resolve_target_modules_for_model(model, model_id: str, requested: list[str])
                 if isinstance(mod, _SUPPORTED_LINEARS):
                     match_count += 1
 
-        # If fewer than half the requested modules are supported linears,
-        # swap to auto-detected names.
         if match_count < len(requested) // 2 + 1:
             console.print(
                 f"[yellow]⚠ Default target modules {requested} don't fully match "
@@ -443,26 +400,7 @@ def resolve_target_modules_for_model(model, model_id: str, requested: list[str])
 
 
 def _resolve_target_modules(model, requested_modules: list[str]) -> list[str]:
-    """Resolve target module names against the actual model layers.
-
-    Some architectures (e.g. Gemma 4) wrap ``nn.Linear`` inside custom
-    container modules like ``Gemma4ClippableLinear``.  PEFT can only attach
-    LoRA adapters to leaf modules it recognises (Linear, Conv1d, …), so we
-    need to point at the *inner* linear layer rather than the wrapper.
-
-    Strategy: walk the model's named modules.  For every module whose
-    *local name* (last part of its dotted path) appears in
-    ``requested_modules``:
-
-    - If it is a supported type (nn.Linear, etc.), keep the local name as-is.
-    - If it is an unsupported wrapper, look for the first supported inner
-      sub-module and record its **relative path** from the wrapper
-      (e.g. ``"q_proj"`` wrapper with ``"linear"`` sub-module →
-      ``"q_proj.linear"``).
-
-    The returned list contains unique resolved names that will match across
-    all transformer layers.
-    """
+    """Resolve target module names against the actual model layers."""
     import torch.nn as nn
 
     _SUPPORTED_BASES = [nn.Linear, nn.Embedding, nn.Conv1d, nn.Conv2d, nn.Conv3d]
@@ -482,7 +420,7 @@ def _resolve_target_modules(model, requested_modules: list[str]) -> list[str]:
     _SUPPORTED_BASES = tuple(_SUPPORTED_BASES)
 
     requested_set = set(requested_modules)
-    resolved_names: dict[str, str] = {}  # local_name → resolved target name
+    resolved_names: dict[str, str] = {}
 
     for full_name, module in model.named_modules():
         parts = full_name.split(".")
@@ -491,26 +429,20 @@ def _resolve_target_modules(model, requested_modules: list[str]) -> list[str]:
         if local_name not in requested_set:
             continue
 
-        # Already resolved this name with a supported module.
         if local_name in resolved_names:
             continue
 
-        # If the module itself is a supported type, the short name works fine.
         if isinstance(module, _SUPPORTED_BASES):
             resolved_names[local_name] = local_name
             continue
 
-        # Unsupported wrapper — look for supported inner modules.
         found_inner = False
         for inner_name, inner_mod in module.named_modules():
             if inner_name and isinstance(inner_mod, _SUPPORTED_BASES):
-                # inner_name is relative to wrapper, e.g. "linear"
                 resolved_names[local_name] = f"{local_name}.{inner_name}"
                 found_inner = True
                 break
 
-        # If no supported inner module found, fall back to the short name.
-        # PEFT itself will report a clearer error.
         if not found_inner:
             resolved_names[local_name] = local_name
 
@@ -563,7 +495,7 @@ def apply_lora_adapters(
             console.print("[green]  LoRA adapters applied[/green]")
             return model
         except ImportError:
-            pass  # Fall through to standard PEFT
+            pass
 
     from peft import LoraConfig, get_peft_model, TaskType
 
@@ -592,27 +524,13 @@ def format_dataset_for_training(
     hyperparams: HyperParams,
     data_format: str = "instruction",
 ) -> Dataset:
-    """Format the raw dataset into tokenised training examples.
-
-    For "instruction" format, uses the Alpaca prompt template.
-    For "completion" format, simply tokenises the text field.
-
-    If the provided ``tokenizer`` is actually a multimodal processor (e.g. for
-    vision-language models), the inner text tokenizer is extracted so that
-    text-only fine-tuning works correctly.
-    """
-    import torch
-
-    # Detect multimodal processors and extract the inner text tokenizer.
-    # Processors have a ``.tokenizer`` attribute pointing to the real tokenizer
-    # and usually expose an ``.image_processor`` attribute.
+    """Format the raw dataset into tokenised training examples."""
     if hasattr(tokenizer, "tokenizer") and hasattr(tokenizer, "image_processor"):
         tok = tokenizer.tokenizer
     else:
         tok = tokenizer
 
     def _format_instruction_sample(example: dict) -> dict:
-        """Alpaca-style formatting."""
         if example.get("input"):
             prompt = (
                 f"### Instruction:\n{example['instruction']}\n\n"
@@ -634,7 +552,6 @@ def format_dataset_for_training(
         return result
 
     def _format_completion_sample(example: dict) -> dict:
-        """Plain text completion formatting."""
         result = tok(
             example["text"],
             truncation=True,
@@ -673,9 +590,12 @@ def train(
     tokenised_dataset,
     config: FinetuneConfig,
 ) -> Path:
-    """Run LoRA / QLoRA fine-tuning and return the checkpoint directory.
+    """Run LoRA / QLoRA fine-tuning and return the adapter checkpoint directory.
 
-    Uses HuggingFace TRL's SFTTrainer under the hood.
+    Uses HuggingFace TRL's SFTTrainer under the hood.  The caller retains
+    its reference to ``model`` and ``tokenizer`` so that the GGUF export
+    step can operate on the in-memory Unsloth-wrapped model without having
+    to reload the base.
     """
     from transformers import TrainingArguments
     from trl import SFTTrainer
@@ -684,7 +604,6 @@ def train(
     output_dir = Path(config.output_dir) / "checkpoints"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Convert warmup_ratio to warmup_steps (warmup_ratio is deprecated in transformers v5.2)
     import math
     num_examples = len(tokenised_dataset)
     steps_per_epoch = math.ceil(
@@ -693,7 +612,6 @@ def train(
     total_steps = steps_per_epoch * hp.num_train_epochs
     warmup_steps = max(1, int(total_steps * hp.warmup_ratio)) if hp.warmup_ratio > 0 else 0
 
-    # Training arguments
     training_args = TrainingArguments(
         output_dir=str(output_dir),
         num_train_epochs=hp.num_train_epochs,
@@ -711,13 +629,12 @@ def train(
         save_strategy=hp.save_strategy,
         eval_strategy=hp.eval_strategy if "test" in tokenised_dataset.column_names else "no",
         seed=config.seed,
-        report_to="none",  # Disable wandb/tensorboard by default
+        report_to="none",
         max_grad_norm=1.0,
         dataloader_pin_memory=True,
         remove_unused_columns=False,
     )
 
-    # Create trainer
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
@@ -727,7 +644,6 @@ def train(
         dataset_text_field="text" if config.data_format == "completion" else None,
     )
 
-    # Show training config
     console.print(Panel(
         f"[bold]Model[/bold]: {config.model_id}\n"
         f"[bold]Method[/bold]: {config.method}\n"
@@ -741,11 +657,9 @@ def train(
         border_style="green",
     ))
 
-    # Train!
     console.print("[cyan]Starting training...[/cyan]")
     trainer.train(resume_from_checkpoint=config.resume_from_checkpoint)
 
-    # Save the final model
     final_dir = Path(config.output_dir) / "final_adapter"
     console.print(f"\n[blue]Saving adapter to {final_dir}...[/blue]")
     trainer.save_model(str(final_dir))
@@ -756,194 +670,136 @@ def train(
 
 
 # ---------------------------------------------------------------------------
-# Merge adapters into base model
+# GGUF export (Unsloth-native)
 # ---------------------------------------------------------------------------
 
-def _dequantize_bnb_model(model):
-    """Replace all bitsandbytes 4-bit layers with standard fp16 Linear layers.
+def _ensure_unsloth_model(model, tokenizer, model_id: str, adapter_path: Optional[Path],
+                         max_seq_length: int, method: FinetuneMethod):
+    """Return a (model, tokenizer) pair that exposes ``save_pretrained_gguf``.
 
-    transformers 5.x does not implement ``reverse_op`` for BNB quantizers,
-    so ``save_pretrained`` crashes on merged 4-bit models.  Dequantizing
-    manually bypasses the quantizer entirely.
-
-    Also handles wrapped architectures (e.g. Gemma4ClippableLinear) where
-    the ``Linear4bit`` is an inner submodule rather than a top-level attribute.
+    If the caller's ``model`` already came out of Unsloth's
+    ``FastLanguageModel``, it is returned unchanged.  Otherwise we reload
+    the base model via Unsloth and attach the saved LoRA adapter so
+    ``save_pretrained_gguf`` is available.
     """
-    import bitsandbytes as bnb
-    import torch
+    if model is not None and hasattr(model, "save_pretrained_gguf"):
+        return model, tokenizer
 
-    for name, module in list(model.named_modules()):
-        # Direct Linear4bit — replace in-place
-        if not isinstance(module, bnb.nn.Linear4bit):
-            continue
-
-        # If the parent module is a wrapper (like Gemma4ClippableLinear),
-        # the replacement must happen on the wrapper's attribute, not by
-        # replacing the wrapper itself.  Otherwise the wrapper's forward()
-        # still references the old quantised layer.
-        parent = model
-        *parent_parts, child_name = name.split(".")
-        for part in parent_parts:
-            parent = getattr(parent, part)
-
-        # Dequantize weight to fp16
-        weight_fp = bnb.functional.dequantize_4bit(
-            module.weight.data,
-            module.weight.quant_state,
-            quant_type=getattr(module.weight, "quant_type", "nf4"),
-        ).to(torch.float16)
-
-        # Build standard Linear replacement
-        new_module = torch.nn.Linear(
-            module.in_features,
-            module.out_features,
-            bias=module.bias is not None,
-            dtype=torch.float16,
-            device=module.weight.device,
-        )
-        new_module.weight.data = weight_fp
-        if module.bias is not None:
-            new_module.bias.data = module.bias.data.to(torch.float16)
-
-        setattr(parent, child_name, new_module)
-
-    # Remove all quantization-related attributes from the model to prevent
-    # transformers 5.x from trying to call reverse_op during save_pretrained.
-    if hasattr(model, "hf_quantizer"):
-        model.hf_quantizer = None
-    if hasattr(model, "config"):
-        config = model.config
-        for attr in ("quantization_config", "_pre_quantization_dtype",
-                      "quantization_method", "_quantization_config"):
-            if hasattr(config, attr):
-                try:
-                    delattr(config, attr)
-                except (AttributeError, TypeError):
-                    pass
-        # Also clear the config dict entry if present
-        if hasattr(config, "__dict__"):
-            for attr in ("quantization_config", "_pre_quantization_dtype",
-                          "quantization_method", "_quantization_config"):
-                config.__dict__.pop(attr, None)
-
-    # Remove device_map and dispatching metadata which can interfere
-    if hasattr(model, "hf_device_map"):
-        try:
-            delattr(model, "hf_device_map")
-        except (AttributeError, TypeError):
-            pass
-
-    return model
-
-
-def merge_adapter_to_base(
-    adapter_path: Path,
-    model_id: str,
-    output_dir: Path,
-    max_seq_length: int = 2048,
-) -> Path:
-    """Merge the LoRA adapter weights back into the base model.
-
-    This is required before converting to GGUF since llama.cpp needs
-    a full model, not an adapter.
-
-    Returns the path to the merged model directory.
-    """
-    from peft import PeftModel
-    import torch
-
-    merged_dir = output_dir / "merged_model"
-    merged_dir.mkdir(parents=True, exist_ok=True)
-
-    token = _hf_token()
-
-    # ------------------------------------------------------------------
-    # Unsloth path (preferred)
-    # ------------------------------------------------------------------
     try:
         from unsloth import FastLanguageModel
+    except ImportError as exc:
+        raise RuntimeError(
+            "Unsloth is required for GGUF export. Install it with:\n"
+            "  pip install 'unsloth[colab-new] @ git+https://github.com/unslothai/unsloth'"
+        ) from exc
 
-        console.print("[cyan]Loading base model with Unsloth for merging...[/cyan]")
-        model, tokenizer = FastLanguageModel.from_pretrained(
-            model_name=model_id,
-            max_seq_length=max_seq_length,
-            load_in_4bit=True,
-            dtype=None,
-            token=token,
+    if adapter_path is None:
+        raise RuntimeError(
+            "Cannot export to GGUF: no in-memory Unsloth model and no adapter "
+            "path was provided to reload from."
         )
 
-        console.print(f"[cyan]Loading adapter from {adapter_path}...[/cyan]")
-        model = PeftModel.from_pretrained(model, str(adapter_path))
+    console.print("[cyan]Reloading base model with Unsloth for GGUF export...[/cyan]")
+    reloaded_model, reloaded_tok = FastLanguageModel.from_pretrained(
+        model_name=model_id,
+        max_seq_length=max_seq_length,
+        load_in_4bit=method == FinetuneMethod.QLORA,
+        dtype=None,
+        token=_hf_token(),
+    )
 
-        console.print("[cyan]Merging adapter weights...[/cyan]")
-        model = model.merge_and_unload()
+    from peft import PeftModel
+    reloaded_model = PeftModel.from_pretrained(reloaded_model, str(adapter_path))
 
-        console.print("[cyan]Dequantizing 4-bit layers for save...[/cyan]")
-        model = _dequantize_bnb_model(model)
+    if not hasattr(reloaded_model, "save_pretrained_gguf"):
+        raise RuntimeError(
+            "Reloaded model still does not expose save_pretrained_gguf. "
+            "This usually means the installed Unsloth version is too old — "
+            "upgrade with: pip install -U unsloth unsloth_zoo"
+        )
 
-        console.print(f"[cyan]Saving merged model to {merged_dir}...[/cyan]")
-        try:
-            model.save_pretrained(str(merged_dir), safe_serialization=True)
-        except NotImplementedError as exc:
-            console.print(f"[yellow]  save_pretrained failed ({exc}), retrying after cleanup...[/yellow]")
-            model = _dequantize_bnb_model(model)
-            model.save_pretrained(str(merged_dir), safe_serialization=True)
-        tokenizer.save_pretrained(str(merged_dir))
+    return reloaded_model, reloaded_tok
 
-        console.print(f"[green]  Merged model saved[/green]")
-        return merged_dir
 
-    except ImportError:
-        pass  # Unsloth not installed – fall through to standard HF
+def save_gguf_unsloth(
+    model,
+    tokenizer,
+    config: FinetuneConfig,
+    adapter_path: Optional[Path] = None,
+) -> Path:
+    """Merge, dequantize, convert, and quantize to GGUF via Unsloth — all in one call.
 
-    # ------------------------------------------------------------------
-    # Standard HuggingFace fallback
-    # ------------------------------------------------------------------
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    This is the *only* save path the pipeline uses.  It deliberately avoids
+    ``transformers.save_pretrained`` and ``peft.merge_and_unload`` because
+    transformers 5.x's ``ConversionOps.reverse_op`` is not implemented for
+    bitsandbytes, which crashes the standard HF save path on merged 4-bit
+    models.  Unsloth runs its own merge + dequant + llama.cpp conversion
+    internally and bypasses the broken code entirely.
 
-    console.print("[cyan]Loading base model for merging...[/cyan]")
+    Args:
+        model: The fine-tuned model (ideally still Unsloth-wrapped with the
+            LoRA adapter attached and the base in 4-bit).
+        tokenizer: Tokenizer that matches the model.
+        config: Pipeline configuration (for quantisation and output dir).
+        adapter_path: Optional LoRA adapter directory — used as a fallback
+            to reload the model via Unsloth when ``model`` is ``None`` or
+            does not expose ``save_pretrained_gguf``.
+
+    Returns:
+        Path to the single ``.gguf`` file Unsloth wrote.
+    """
+    gguf_dir = config.get_gguf_output_dir()
+    gguf_dir.mkdir(parents=True, exist_ok=True)
+    quant = config.get_quantization_method()
+
+    console.print(Panel(
+        f"[cyan]Output[/cyan]: {gguf_dir}\n"
+        f"[cyan]Quant[/cyan]:  {quant}",
+        title="GGUF Export (Unsloth)",
+        border_style="cyan",
+        padding=(0, 1),
+    ))
+
+    model, tokenizer = _ensure_unsloth_model(
+        model=model,
+        tokenizer=tokenizer,
+        model_id=config.model_id,
+        adapter_path=adapter_path,
+        max_seq_length=config.hyperparams.max_seq_length,
+        method=config.method if isinstance(config.method, FinetuneMethod)
+            else FinetuneMethod(config.method),
+    )
+
+    console.print("[cyan]Calling Unsloth save_pretrained_gguf...[/cyan]")
+    model.save_pretrained_gguf(
+        save_directory=str(gguf_dir),
+        tokenizer=tokenizer,
+        quantization_method=quant,
+    )
+
+    gguf_files = sorted(gguf_dir.glob("*.gguf"))
+    if not gguf_files:
+        raise RuntimeError(
+            f"Unsloth's save_pretrained_gguf produced no .gguf file in {gguf_dir}. "
+            "Check the logs above for errors from llama.cpp."
+        )
+
+    # Prefer a file whose name contains the requested quant tag (case-insensitive).
+    quant_tag = quant.replace("-", "_").lower()
+    selected = next(
+        (p for p in gguf_files if quant_tag in p.name.lower()),
+        gguf_files[0],
+    )
+
+    console.print(f"[green]  GGUF saved: {selected}[/green]")
+
+    # Free any temporary tensors allocated during conversion.
+    gc.collect()
     try:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        dtype = (
-            torch.bfloat16
-            if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-            else torch.float16
-        )
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
 
-        base_model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            torch_dtype=dtype,
-            device_map=device,
-            low_cpu_mem_usage=True,
-            trust_remote_code=True,
-            token=token,
-        )
-
-        console.print(f"[cyan]Loading adapter from {adapter_path}...[/cyan]")
-        model = PeftModel.from_pretrained(base_model, str(adapter_path))
-
-        console.print("[cyan]Merging adapter weights...[/cyan]")
-        console.print("[dim]  (This may take a few minutes for 7B+ models)[/dim]")
-        model = model.merge_and_unload()
-
-        console.print("[cyan]Dequantizing 4-bit layers for save...[/cyan]")
-        model = _dequantize_bnb_model(model)
-
-        console.print(f"[cyan]Saving merged model to {merged_dir}...[/cyan]")
-        try:
-            model.save_pretrained(str(merged_dir), safe_serialization=True)
-        except NotImplementedError as exc:
-            console.print(f"[yellow]  save_pretrained failed ({exc}), retrying after cleanup...[/yellow]")
-            model = _dequantize_bnb_model(model)
-            model.save_pretrained(str(merged_dir), safe_serialization=True)
-
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_id, trust_remote_code=True, token=token
-        )
-        tokenizer.save_pretrained(str(merged_dir))
-    except Exception as e:
-        _handle_model_load_error(e, model_id)
-        raise
-
-    console.print(f"[green]  Merged model saved[/green]")
-    return merged_dir
+    return selected

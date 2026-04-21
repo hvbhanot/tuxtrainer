@@ -5,7 +5,7 @@ Provides a comprehensive command-line interface with the following commands:
   * run     — Full pipeline: PDFs → fine-tune → GGUF → Ollama
   * prep    — Only process PDFs into a JSONL dataset (inspect before training)
   * train   — Fine-tune from a prepared dataset
-  * export  — Convert a fine-tuned model to GGUF
+  * export  — Convert a fine-tuned adapter (+ base) to GGUF via Unsloth
   * push    — Push a GGUF model to Ollama
   * info    — Show system info and dependency check
 """
@@ -28,6 +28,7 @@ from tuxtrainer.config import (
     HyperParams,
     MasterModelBackend,
     Quantisation,
+    SUPPORTED_QUANTIZATIONS,
 )
 
 console = Console()
@@ -140,13 +141,19 @@ def _hyperparam_options(f):
     return f
 
 
+# Quantisation values are shown lowercase (canonical) in help text.  The
+# Click ``case_sensitive=False`` flag accepts legacy uppercase forms, and
+# the Pydantic field validator normalises them before they reach Unsloth.
+_QUANT_CLI_CHOICES = sorted(q.value for q in Quantisation)
+
+
 def _export_options(f):
     """Decorator that adds export/push options."""
     f = click.option(
         "--quant",
-        type=click.Choice([q.value for q in Quantisation], case_sensitive=False),
-        default="Q4_K_M",
-        help="GGUF quantisation level.",
+        type=click.Choice(_QUANT_CLI_CHOICES, case_sensitive=False),
+        default="q4_k_m",
+        help=f"GGUF quantisation level. One of: {sorted(SUPPORTED_QUANTIZATIONS)}.",
     )(f)
     f = click.option(
         "--ollama-name",
@@ -180,7 +187,7 @@ def _export_options(f):
     f = click.option(
         "--use-unsloth/--no-unsloth",
         default=False,
-        help="Use Unsloth for faster fine-tuning.",
+        help="Use Unsloth for faster fine-tuning (GGUF export always uses Unsloth).",
     )(f)
     return f
 
@@ -193,7 +200,6 @@ def _build_config(**kwargs) -> FinetuneConfig:
     """Construct a FinetuneConfig from CLI keyword arguments."""
     hp = HyperParams()
 
-    # Apply explicit overrides
     if kwargs.get("lora_r") is not None:
         hp.lora_r = kwargs["lora_r"]
     if kwargs.get("learning_rate") is not None:
@@ -215,7 +221,7 @@ def _build_config(**kwargs) -> FinetuneConfig:
         master_api_key=kwargs.get("master_api_key"),
         auto_hyperparams=kwargs.get("auto_hp", True),
         output_dir=Path(kwargs.get("output", "./finetune_output")),
-        quantisation=Quantisation(kwargs.get("quant", "Q4_K_M")),
+        quantisation=kwargs.get("quant", "q4_k_m"),
         skip_ollama=kwargs.get("skip_ollama", False),
         ollama_namespace=kwargs.get("ollama_namespace"),
         ollama_model_name=kwargs.get("ollama_name"),
@@ -233,7 +239,7 @@ def _build_config(**kwargs) -> FinetuneConfig:
 # ---------------------------------------------------------------------------
 
 @click.group()
-@click.version_option(version="1.0.0", prog_name="tuxtrainer")
+@click.version_option(version="1.1.0", prog_name="tuxtrainer")
 def main():
     """tuxtrainer: Fine-tune HuggingFace models with PDFs and push to Ollama.
 
@@ -277,7 +283,6 @@ def prep(**kwargs):
         console.print("[red]No PDFs specified. Use --pdf or --pdf-dir.[/red]")
         sys.exit(1)
 
-    # Expand directories
     all_paths = list(pdf_paths)
     for d in pdf_dirs:
         all_paths.extend(sorted(Path(d).glob("*.pdf")))
@@ -322,22 +327,19 @@ def train(**kwargs):
 
     config = _build_config(**kwargs)
 
-    # Load dataset
     console.print(f"[blue]Loading dataset from {kwargs['dataset']}...[/blue]")
     with open(kwargs["dataset"], "r", encoding="utf-8") as f:
         examples = [json.loads(line) for line in f]
     dataset = Dataset.from_list(examples)
     console.print(f"[green]Loaded {len(dataset)} examples.[/green]")
 
-    # Hyperparameter selection
     if config.auto_hyperparams:
         from tuxtrainer.hyperparam_selector import HyperparamSelector
         from tuxtrainer.pdf_processor import DatasetStats
 
-        # Create dummy stats from dataset size
         stats = DatasetStats(
             total_chunks=len(dataset),
-            total_tokens_estimate=len(dataset) * 200,  # Rough estimate
+            total_tokens_estimate=len(dataset) * 200,
             avg_chunk_tokens=200,
             min_chunk_tokens=50,
             max_chunk_tokens=500,
@@ -347,7 +349,6 @@ def train(**kwargs):
         selector = HyperparamSelector(config)
         config.hyperparams = selector.select(stats)
 
-    # Fine-tune
     model, tokenizer = load_model_and_tokenizer(
         config.model_id,
         max_seq_length=config.hyperparams.max_seq_length,
@@ -366,29 +367,54 @@ def train(**kwargs):
 @click.option("--adapter-path", required=True, type=click.Path(exists=True), help="Path to the LoRA adapter.")
 @click.option("--model", "-m", required=True, help="Base HuggingFace model ID.")
 @click.option("--output", "-o", default="./finetune_output", help="Output directory.")
-@click.option("--quant", type=click.Choice([q.value for q in Quantisation]), default="Q4_K_M")
+@click.option(
+    "--quant",
+    type=click.Choice(_QUANT_CLI_CHOICES, case_sensitive=False),
+    default="q4_k_m",
+    help=f"GGUF quantisation level. One of: {sorted(SUPPORTED_QUANTIZATIONS)}.",
+)
+@click.option(
+    "--method",
+    type=click.Choice(["lora", "qlora"], case_sensitive=False),
+    default="qlora",
+    help="Whether the base was loaded in 4-bit (qlora) or full precision (lora).",
+)
 def export(**kwargs):
-    """Merge adapters and convert to GGUF."""
-    from tuxtrainer.finetuner import merge_adapter_to_base
-    from tuxtrainer.gguf_converter import GGUFConverter
+    """Export a LoRA adapter + base model to a GGUF file via Unsloth.
+
+    Unsloth merges the adapter, dequantizes the base, runs the llama.cpp
+    conversion, and quantizes — all in one call.  No intermediate merged
+    fp16 checkpoint is produced.
+    """
+    from tuxtrainer.finetuner import save_gguf_unsloth
 
     adapter_path = Path(kwargs["adapter_path"])
-    model_id = kwargs["model"]
     output_dir = Path(kwargs["output"])
-    quant = Quantisation(kwargs["quant"])
 
-    # Merge
-    merged_dir = merge_adapter_to_base(adapter_path, model_id, output_dir)
+    config = FinetuneConfig(
+        model_id=kwargs["model"],
+        method=FinetuneMethod(kwargs.get("method", "qlora")),
+        output_dir=output_dir,
+        quantisation=kwargs["quant"],
+    )
 
-    # Convert
-    converter = GGUFConverter(quantisation=quant)
-    gguf_path = converter.convert(merged_dir, output_dir / "gguf")
+    gguf_path = save_gguf_unsloth(
+        model=None,
+        tokenizer=None,
+        config=config,
+        adapter_path=adapter_path,
+    )
 
     console.print(f"[green]GGUF model: {gguf_path}[/green]")
 
 
 @main.command()
-@click.option("--gguf", required=True, type=click.Path(exists=True), help="Path to the GGUF file.")
+@click.option(
+    "--gguf",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to the GGUF file, or a directory containing a .gguf file.",
+)
 @click.option("--name", required=True, help="Model name in Ollama.")
 @click.option("--namespace", default=None, help="Ollama registry namespace (username) for push.")
 @click.option("--system-prompt", default=None, help="Custom system prompt.")
@@ -398,7 +424,6 @@ def push(**kwargs):
     """Push a GGUF model to Ollama and optionally to the registry."""
     from tuxtrainer.ollama_pusher import OllamaPusher
 
-    # Build a minimal config
     config = FinetuneConfig(
         model_id="unused",
         ollama_namespace=kwargs.get("namespace"),
@@ -433,8 +458,8 @@ def info():
         ("TRL", _check_trl),
         ("BitsAndBytes", _check_bnb),
         ("Ollama", _check_ollama),
-        ("llama.cpp", _check_llama_cpp),
         ("Unsloth", _check_unsloth),
+        ("Unsloth Zoo", _check_unsloth_zoo),
         ("PyMuPDF", _check_pymupdf),
     ]
 
@@ -512,20 +537,19 @@ def _check_ollama():
     except Exception as e:
         return False, f"Error: {e}"
 
-def _check_llama_cpp():
-    from tuxtrainer.gguf_converter import _find_llama_cpp, _find_convert_script
-    path = _find_llama_cpp()
-    script = _find_convert_script()
-    if path or script:
-        return True, f"Found at {path or script}"
-    return False, "Not found (optional for GGUF conversion)"
-
 def _check_unsloth():
     try:
         import unsloth
-        return True, unsloth.__version__
+        return True, getattr(unsloth, "__version__", "installed")
     except ImportError:
-        return False, "Not installed (optional, 2× faster training)"
+        return False, "Not installed (required for GGUF export)"
+
+def _check_unsloth_zoo():
+    try:
+        import unsloth_zoo
+        return True, getattr(unsloth_zoo, "__version__", "installed")
+    except ImportError:
+        return False, "Not installed (required for GGUF export)"
 
 def _check_pymupdf():
     try:

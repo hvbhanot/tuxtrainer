@@ -8,11 +8,12 @@ serialisable, and easy to override from the CLI or a YAML file.
 from __future__ import annotations
 
 import os
+import warnings
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -20,12 +21,16 @@ from pydantic import BaseModel, Field, field_validator
 # ---------------------------------------------------------------------------
 
 class Quantisation(str, Enum):
-    """Quantisation levels for the final GGUF export."""
-    Q4_K_M = "Q4_K_M"
-    Q5_K_M = "Q5_K_M"
-    Q6_K = "Q6_K"
-    Q8_0 = "Q8_0"
-    F16 = "F16"
+    """Quantisation levels accepted by Unsloth's ``save_pretrained_gguf``."""
+    Q4_K_M = "q4_k_m"
+    Q5_K_M = "q5_k_m"
+    Q6_K = "q6_k"
+    Q8_0 = "q8_0"
+    F16 = "f16"
+
+
+# Kept in one place so the CLI, Unsloth, and validators all agree.
+SUPPORTED_QUANTIZATIONS: frozenset[str] = frozenset(q.value for q in Quantisation)
 
 
 class MasterModelBackend(str, Enum):
@@ -160,6 +165,15 @@ class HyperParams(BaseModel):
 # Top-level pipeline config
 # ---------------------------------------------------------------------------
 
+# Kwargs that used to point at the intermediate merged-fp16 checkpoint.
+# They are no longer produced; pass-through with a DeprecationWarning.
+_DEPRECATED_KWARGS: tuple[str, ...] = (
+    "merged_model_dir",
+    "merged_output_dir",
+    "merged_dir",
+)
+
+
 class FinetuneConfig(BaseModel):
     """Full pipeline configuration.
 
@@ -242,9 +256,22 @@ class FinetuneConfig(BaseModel):
         default=Path("./finetune_output"),
         description="Working directory for checkpoints and exports.",
     )
+    gguf_output_dir: Optional[Path] = Field(
+        default=None,
+        description=(
+            "Directory where the final GGUF file is written. "
+            "Defaults to '{output_dir}/gguf'. This is the only export "
+            "artefact the pipeline produces — no intermediate fp16 "
+            "merged checkpoint is saved."
+        ),
+    )
     quantisation: Quantisation = Field(
         default=Quantisation.Q4_K_M,
-        description="Quantisation level for the GGUF export.",
+        description=(
+            "Quantisation level for the GGUF export. Must be one of: "
+            f"{sorted(SUPPORTED_QUANTIZATIONS)}. "
+            "Passed directly to Unsloth's save_pretrained_gguf."
+        ),
     )
 
     # --- Ollama (push to registry by default so you can use it on any device) ---
@@ -261,8 +288,8 @@ class FinetuneConfig(BaseModel):
         description=(
             "Your Ollama registry namespace (username). Required to push to the "
             "registry so the model is available on other devices. "
-"Set OLLAMA_NAMESPACE env var or pass it here. "
-"Example: 'myuser' → model becomes 'myuser/llama-3.1-8b-finetuned'"
+            "Set OLLAMA_NAMESPACE env var or pass it here. "
+            "Example: 'myuser' → model becomes 'myuser/llama-3.1-8b-finetuned'"
         ),
     )
     ollama_model_name: Optional[str] = Field(
@@ -286,12 +313,47 @@ class FinetuneConfig(BaseModel):
     resume_from_checkpoint: Optional[Path] = Field(default=None)
     use_unsloth: bool = Field(
         default=False,
-        description="Use Unsloth for 2× faster fine-tuning (requires unsloth package).",
+        description=(
+            "Use Unsloth's FastLanguageModel for training (2× faster). "
+            "Unsloth is also used unconditionally for the GGUF export stage "
+            "regardless of this flag, since it is the only save path that "
+            "avoids the transformers 5.x ConversionOps regression."
+        ),
     )
 
     # ------------------------------------------------------------------
     # Validators
     # ------------------------------------------------------------------
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_deprecated(cls, data: Any) -> Any:
+        """Drop old kwargs that used to reference a merged-fp16 directory.
+
+        The pipeline no longer produces a merged checkpoint — Unsloth's
+        ``save_pretrained_gguf`` converts straight to GGUF from the
+        LoRA-on-4bit model in memory.  Warn loudly so callers update.
+        """
+        if isinstance(data, dict):
+            for key in _DEPRECATED_KWARGS:
+                if key in data:
+                    warnings.warn(
+                        f"{key!r} is deprecated and ignored: the pipeline "
+                        "no longer produces an intermediate merged fp16 "
+                        "checkpoint. Remove it from your config.",
+                        DeprecationWarning,
+                        stacklevel=3,
+                    )
+                    data.pop(key, None)
+        return data
+
+    @field_validator("quantisation", mode="before")
+    @classmethod
+    def _normalise_quantisation(cls, v: Any) -> Any:
+        """Accept both 'Q4_K_M' (legacy) and 'q4_k_m' (canonical) forms."""
+        if isinstance(v, str):
+            return v.lower()
+        return v
 
     @field_validator("pdf_paths", mode="before")
     @classmethod
@@ -302,6 +364,23 @@ class FinetuneConfig(BaseModel):
     @classmethod
     def _resolve_pdf_dirs(cls, v: list) -> list[Path]:
         return [Path(p).expanduser().resolve() for p in v]
+
+    # ------------------------------------------------------------------
+    # Derived paths
+    # ------------------------------------------------------------------
+
+    def get_gguf_output_dir(self) -> Path:
+        """Return the directory Unsloth writes the GGUF file into."""
+        if self.gguf_output_dir is not None:
+            return Path(self.gguf_output_dir)
+        return Path(self.output_dir) / "gguf"
+
+    def get_quantization_method(self) -> str:
+        """Return the quantisation string accepted by Unsloth."""
+        q = self.quantisation
+        if hasattr(q, "value"):
+            return q.value.lower()
+        return str(q).lower()
 
     def get_ollama_namespace(self) -> str:
         """Return the Ollama registry namespace (username)."""

@@ -6,6 +6,8 @@ Fine-tune small LLMs on your PDFs and push to **Ollama** — optimised for Googl
 PDFs → extract & chunk → master model picks hyperparams → Unsloth QLoRA → GGUF → Ollama registry
 ```
 
+The GGUF conversion is done by Unsloth's native `save_pretrained_gguf`, which merges the LoRA adapter, dequantizes the 4-bit base, runs llama.cpp, and quantizes — all in one call. The pipeline produces a **single `.gguf` file** in `finetune_output/gguf/`; no intermediate fp16 checkpoint is saved.
+
 Pull your model on any device:
 
 ```bash
@@ -47,10 +49,13 @@ config = FinetuneConfig(
     pdf_paths=[Path("my_document.pdf")],
     master_backend="ollama",   # uses local Ollama, no API key needed
     master_model="llama3.1",
+    use_unsloth=True,          # recommended: faster training and needed by GGUF export
 )
 
 pipeline = FinetunePipeline(config)
 pipeline.run()
+# → finetune_output/gguf/<your-model>.gguf
+# → ollama pull your-ollama-username/<your-model>-finetuned
 ```
 
 ### Gated models
@@ -90,8 +95,12 @@ $ tuxtrainer run --model unsloth/Llama-3.2-1B-Instruct --pdf doc.pdf --no-ollama
 # Skip Ollama entirely — just get the GGUF file
 $ tuxtrainer run --model unsloth/Llama-3.2-1B-Instruct --pdf doc.pdf --skip-ollama
 
-# Push an existing GGUF
-$ tuxtrainer push --gguf model.gguf --name my-expert --namespace myuser
+# Export an existing adapter to GGUF (Unsloth does merge + convert + quantize)
+$ tuxtrainer export --adapter-path ./finetune_output/final_adapter \
+    --model unsloth/Llama-3.2-1B-Instruct --quant q4_k_m
+
+# Push an existing GGUF (accepts a file OR a directory containing one)
+$ tuxtrainer push --gguf ./finetune_output/gguf --name my-expert --namespace myuser
 
 # Prep dataset from PDFs only
 $ tuxtrainer prep --pdf-dir ./documents/ --output dataset.jsonl
@@ -112,13 +121,25 @@ $ tuxtrainer prep --pdf-dir ./documents/ --output dataset.jsonl
 
 ## Quantisation
 
+Quantisation values are passed straight to Unsloth's `save_pretrained_gguf`.
+
 | Level | Size | Quality |
 |-------|------|---------|
-| `Q4_K_M` | Smallest | Good |
-| `Q5_K_M` | Small | Better |
-| `Q6_K` | Medium | Very good |
-| `Q8_0` | Large | Excellent |
-| `F16` | Largest | Perfect |
+| `q4_k_m` | Smallest | Good (default) |
+| `q5_k_m` | Small | Better |
+| `q6_k` | Medium | Very good |
+| `q8_0` | Large | Excellent |
+| `f16` | Largest | Perfect |
+
+Legacy uppercase values (`Q4_K_M`, ...) are still accepted — they are normalised to lowercase at config-parse time.
+
+---
+
+## Why Unsloth for the GGUF step?
+
+transformers 5.x introduced a `ConversionOps` system in `core_model_loading.py` whose bitsandbytes dequantize op does not implement `reverse_op`. That breaks `save_pretrained` on merged 4-bit models with `NotImplementedError`. Unsloth's `save_pretrained_gguf` runs its own merge + dequant + llama.cpp pipeline inside `unsloth_zoo.saving_utils` and bypasses the broken path entirely. See [unslothai/unsloth#4832](https://github.com/unslothai/unsloth/issues/4832) for background.
+
+tuxtrainer pins `transformers>=4.56,<5.0` until the upstream fix ships in a released version.
 
 ---
 

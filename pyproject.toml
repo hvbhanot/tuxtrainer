@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tuxtrainer"
-version = "1.0.1"
+version = "1.1.0"
 description = "Fine-tune HuggingFace models with PDFs and push to Ollama registry — use on any device"
 readme = "README.md"
 license = {text = "MIT"}
@@ -23,13 +23,21 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+# Version pins below are deliberate.  transformers 5.x introduced a
+# ConversionOps system whose bitsandbytes dequantize op lacks a
+# ``reverse_op`` implementation, which breaks ``save_pretrained`` on merged
+# 4-bit models and also destabilises Unsloth's own save path.  Until the
+# upstream fix lands in a released transformers version we pin < 5.0 and
+# stay on the last known-good tokenizers/peft/trl set.  See
+# https://github.com/unslothai/unsloth/issues/4832 for context.
 dependencies = [
     "torch>=2.1.0",
-    "transformers>=4.36.0",
-    "peft>=0.7.0",
-    "trl>=0.7.0",
-    "accelerate>=0.25.0",
-    "bitsandbytes>=0.41.0",
+    "transformers>=4.56,<5.0",
+    "tokenizers<0.22",
+    "trl==0.22.2",
+    "peft>=0.13,<0.17",
+    "bitsandbytes>=0.44",
+    "accelerate>=0.34",
     "datasets>=2.16.0",
     "pymupdf>=1.23.0",
     "rich>=13.0.0",
@@ -40,7 +48,8 @@ dependencies = [
     "protobuf>=3.20.0",
     "scipy>=1.11.0",
     "requests>=2.28.0",
-    "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth",
+    "unsloth @ git+https://github.com/unslothai/unsloth",
+    "unsloth_zoo",
 ]
 
 [project.optional-dependencies]

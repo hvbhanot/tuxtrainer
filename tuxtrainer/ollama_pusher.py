@@ -39,6 +39,38 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# GGUF resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_gguf_file(path: Path) -> Path:
+    """Return a concrete ``.gguf`` file from either a file path or a directory.
+
+    The pipeline hands us whatever Unsloth produced — in practice a single
+    file in ``config.gguf_output_dir``, but filename conventions have
+    changed across Unsloth versions (``unsloth.Q4_K_M.gguf``,
+    ``<model>-q4_k_m.gguf``, ...).  Globbing for ``*.gguf`` keeps us robust
+    to those renames.
+    """
+    path = Path(path)
+    if path.is_file():
+        return path
+    if path.is_dir():
+        matches = sorted(path.glob("*.gguf"))
+        if not matches:
+            raise FileNotFoundError(
+                f"No .gguf file found in {path}. "
+                "Did Unsloth's save_pretrained_gguf complete successfully?"
+            )
+        if len(matches) > 1:
+            # Prefer a non-f16 file if the user asked for a quantised model.
+            non_f16 = [p for p in matches if "f16" not in p.stem.lower()]
+            if non_f16:
+                matches = non_f16
+        return matches[0]
+    raise FileNotFoundError(f"GGUF path does not exist: {path}")
+
+
+# ---------------------------------------------------------------------------
 # Modelfile generation
 # ---------------------------------------------------------------------------
 
@@ -479,13 +511,18 @@ class OllamaPusher:
         ``namespace/llama-3.1-8b-finetuned`` to the registry.
 
         Args:
-            gguf_path: Path to the quantised GGUF file (must be on the
-                same machine as the Ollama server).
+            gguf_path: Path to the quantised GGUF file, OR a directory
+                containing a single ``.gguf`` file (the pipeline passes
+                the directory Unsloth wrote into and we glob for the file
+                here to be robust to Unsloth's renaming conventions
+                across versions).
             system_prompt: Custom system prompt for the model.
 
         Returns:
             The full Ollama model name (with namespace if set).
         """
+        gguf_path = _resolve_gguf_file(gguf_path)
+
         local_name = self.config.get_ollama_model_name()
         full_name = self.config.get_ollama_full_name()
         namespace = self.config.get_ollama_namespace()
