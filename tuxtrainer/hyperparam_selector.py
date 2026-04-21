@@ -369,10 +369,10 @@ class HyperparamSelector:
             return self.config.hyperparams
 
         console.print(Panel(
-            f"[bold]Master Model[/bold]: {self.config.master_model}\n"
-            f"[bold]Backend[/bold]: {self.config.master_backend}",
+            f"[cyan]Master model[/cyan]: {self.config.master_model}  |  "
+            f"[cyan]Backend[/cyan]: {self.config.master_backend}",
             title="Hyperparameter Selection",
-            border_style="blue",
+            border_style="cyan",
         ))
 
         # Build the prompt
@@ -395,7 +395,7 @@ class HyperparamSelector:
         raw_response = self._call_backend(user_prompt)
 
         if not raw_response:
-            console.print("[red]Master model returned empty response — using defaults.[/red]")
+            console.print("[yellow]Master model returned empty response — using defaults.[/yellow]")
             return self.config.hyperparams
 
         # Parse the JSON
@@ -410,15 +410,15 @@ class HyperparamSelector:
 
             hp_dict = json.loads(cleaned)
         except json.JSONDecodeError as e:
-            console.print(f"[red]Failed to parse master model JSON: {e}[/red]")
-            console.print(f"[dim]Raw response: {raw_response[:500]}[/dim]")
+            console.print("[yellow]Failed to parse master model response — using defaults.[/yellow]")
+            logger.debug("Raw master model response: %s", raw_response[:500])
             return self.config.hyperparams
 
         # Validate against schema
         try:
             hyperparams = HyperParams(**hp_dict)
         except ValidationError as e:
-            console.print(f"[red]Master model returned invalid hyperparams: {e}[/red]")
+            console.print("[yellow]Master model returned invalid hyperparams — using valid fields only.[/yellow]")
             # Merge what we can
             valid_fields = {}
             for key, value in hp_dict.items():
@@ -474,11 +474,11 @@ class HyperparamSelector:
                 )
             else:
                 raise ValueError(f"Unknown master backend: {backend}")
-        except requests.ConnectionError as e:
+        except requests.ConnectionError:
             # If OLLAMA_CLOUD can't connect, try local Ollama as a fallback
             if backend in (MasterModelBackend.OLLAMA_CLOUD, "ollama_cloud"):
                 console.print(
-                    f"[yellow]Ollama Cloud unreachable ({e}). "
+                    "[yellow]Ollama Cloud unreachable. "
                     "Trying local Ollama instance...[/yellow]"
                 )
                 try:
@@ -488,19 +488,24 @@ class HyperparamSelector:
                         user_prompt=user_prompt,
                         host=self.config.ollama_host,
                     )
-                except Exception as local_err:
-                    console.print(f"[red]Local Ollama also failed: {local_err}[/red]")
-            console.print(f"[red]Master model call failed: {e}[/red]")
-            console.print("[yellow]Falling back to default hyperparameters.[/yellow]")
+                except Exception:
+                    console.print("[red]Local Ollama also failed.[/red]")
+            console.print("[yellow]Master model unavailable — using default hyperparameters.[/yellow]")
             return ""
-        except Exception as e:
-            console.print(f"[red]Master model call failed: {e}[/red]")
-            console.print("[yellow]Falling back to default hyperparameters.[/yellow]")
+        except Exception:
+            console.print("[yellow]Master model unavailable — using default hyperparameters.[/yellow]")
             return ""
 
     @staticmethod
     def _display_hyperparams(hp: HyperParams) -> None:
         """Pretty-print the selected hyperparameters."""
-        hp_json = hp.model_dump_json(indent=2)
-        syntax = Syntax(hp_json, "json", theme="monokai", word_wrap=True)
-        console.print(Panel(syntax, title="Selected Hyperparameters", border_style="green"))
+        from rich.table import Table
+
+        table = Table(title="Selected Hyperparameters", show_header=False, border_style="green")
+        table.add_column("Parameter", style="cyan")
+        table.add_column("Value", style="white")
+
+        for key, value in hp.model_dump().items():
+            table.add_row(key, str(value))
+
+        console.print(table)

@@ -506,16 +506,6 @@ class OllamaPusher:
         modelfile_path.write_text(modelfile_content, encoding="utf-8")
 
         push_target = full_name if namespace else local_name
-        console.print(Panel(
-            f"[bold]Model Name[/bold]: {push_target}\n"
-            f"[bold]GGUF[/bold]: {gguf_path}\n"
-            f"[bold]Host[/bold]: {host}\n"
-            f"[bold]Push to registry[/bold]: {self.config.ollama_push}\n"
-            f"[bold]Namespace[/bold]: {namespace or '(not set — model will be local only)'}\n"
-            f"[bold]Modelfile[/bold]: {modelfile_path}",
-            title="Ollama Push (Web API)",
-            border_style="cyan",
-        ))
 
         # Create the local model first
         create_ollama_model(
@@ -526,7 +516,7 @@ class OllamaPusher:
 
         # If namespace is set, also create with full name for registry push
         if namespace and full_name != local_name:
-            console.print(f"[blue]Creating namespaced model '{full_name}' for registry push...[/blue]")
+            console.print(f"[cyan]Creating namespaced model '{full_name}'...[/cyan]")
             create_ollama_model(
                 model_name=full_name,
                 modelfile_content=modelfile_content,
@@ -537,19 +527,9 @@ class OllamaPusher:
         if self.config.ollama_push:
             if namespace:
                 push_ollama_model(full_name, host=host)
-                console.print(
-                    f"\n[bold green]Model pushed to registry![/bold green]\n"
-                    f"[bold]Pull on any device:[/bold] ollama pull {full_name}\n"
-                    f"[bold]Run locally:[/bold] ollama run {full_name}"
-                )
+                console.print(f"[green]  Pushed {full_name} to registry[/green]")
             else:
-                console.print(
-                    "\n[yellow]Registry push skipped — no namespace set.[/yellow]\n"
-                    "To push to the Ollama registry and use on other devices, set your namespace:\n"
-                    "  [dim]--ollama-namespace your_username[/dim]\n"
-                    "  [dim]or: export OLLAMA_NAMESPACE=your_username[/dim]\n\n"
-                    "The model is available locally as: [bold]ollama run {local_name}[/bold]"
-                )
+                console.print("[yellow]  Registry push skipped — no namespace set[/yellow]")
 
         # Verify local model exists
         existing = list_ollama_models(host)

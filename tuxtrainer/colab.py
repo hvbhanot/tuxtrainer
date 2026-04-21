@@ -58,9 +58,8 @@ def _install_system_deps() -> None:
     try:
         _run("apt-get update -qq && apt-get install -y -qq zstd", timeout=120)
         console.print("[green]zstd installed.[/green]")
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        console.print(f"[yellow]zstd install failed (non-fatal): {e}[/yellow]")
-        console.print("[yellow]Ollama installation may fail without zstd.[/yellow]")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        console.print("[yellow]zstd install failed (non-fatal) — Ollama install may fail without it[/yellow]")
 
 
 def _is_ollama_installed() -> bool:
@@ -145,21 +144,14 @@ def setup_colab(
                     check=False,
                 )
                 if result.returncode != 0:
-                    console.print(f"[red]Ollama install failed (exit {result.returncode}).[/red]")
-                    if result.stderr:
-                        console.print(f"[dim]{result.stderr[:500]}[/dim]")
-                    console.print(
-                        "[yellow]Try installing manually:[/yellow]\n"
-                        "  [dim]!apt-get install -y zstd && curl -fsSL https://ollama.com/install.sh | sh[/dim]"
-                    )
+                    console.print("[red]Ollama install failed.[/red]")
                     raise RuntimeError(
-                        f"Ollama installation failed (exit code {result.returncode}). "
-                        "See error above. You may need to install zstd first: "
-                        "!apt-get install -y zstd"
+                        "Ollama installation failed. Try manually:\n"
+                        "  !apt-get install -y zstd && curl -fsSL https://ollama.com/install.sh | sh"
                     )
                 console.print("[green]Ollama installed.[/green]")
-            except subprocess.TimeoutExpired as e:
-                console.print(f"[red]Ollama install timed out: {e}[/red]")
+            except subprocess.TimeoutExpired:
+                console.print("[red]Ollama install timed out[/red]")
                 raise
 
         # Verify the binary exists before trying to start it
@@ -234,9 +226,8 @@ def setup_colab(
             )
             os.environ["LLAMA_CPP_PATH"] = "/content/llama.cpp"
             console.print("[green]llama.cpp installed at /content/llama.cpp[/green]")
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            console.print(f"[yellow]llama.cpp install failed: {e}[/yellow]")
-            console.print("[yellow]You can still fine-tune, but GGUF conversion may not work.[/yellow]")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            console.print("[yellow]llama.cpp install failed — GGUF conversion may not work[/yellow]")
 
     # ── Done ───────────────────────────────────────────────────────────
     console.print("\n[bold green]Colab setup complete![/bold green]")

@@ -82,8 +82,9 @@ class FinetunePipeline:
 
         console.print(Panel(
             self._summary_text(),
-            title="tuxtrainer Pipeline",
-            border_style="bright_blue",
+            title="tuxtrainer",
+            border_style="cyan",
+            padding=(0, 1),
         ))
 
         # ── Stage 1: Process PDFs ──────────────────────────────────────
@@ -103,16 +104,12 @@ class FinetunePipeline:
 
         # ── Stage 6: Push to Ollama (optional) ─────────────────────────
         if self.config.skip_ollama:
-            console.print("\n[yellow]Skipping Ollama push (skip_ollama=True).[/yellow]")
-            console.print(f"[green]GGUF file ready at: {gguf_path}[/green]")
             model_name = str(gguf_path)
         else:
             try:
                 model_name = self._stage("Ollama Push", self._push_to_ollama, gguf_path)
-            except RuntimeError as e:
-                console.print(f"\n[yellow]Ollama push skipped (server not available): {e}[/yellow]")
-                console.print(f"[green]GGUF file ready at: {gguf_path}[/green]")
-                console.print("[dim]You can load it manually with: ollama create my-model -f Modelfile[/dim]")
+            except RuntimeError:
+                console.print("[yellow]Ollama push skipped — server not available.[/yellow]")
                 model_name = str(gguf_path)
 
         # ── Done ───────────────────────────────────────────────────────
@@ -132,9 +129,9 @@ class FinetunePipeline:
                 "No PDF files provided. Use --pdf or --pdf-dir to specify input files."
             )
 
-        console.print(f"\n[blue]Found {len(pdf_paths)} PDF file(s):[/blue]")
+        console.print(f"[cyan]Found {len(pdf_paths)} PDF file(s):[/cyan]")
         for p in pdf_paths:
-            console.print(f"  • {p}")
+            console.print(f"  [dim]• {p}[/dim]")
 
         processor = PDFProcessor(
             chunk_size=self.config.hyperparams.max_seq_length,
@@ -241,21 +238,19 @@ class FinetunePipeline:
 
     def _stage(self, name: str, fn, *args, **kwargs):
         """Run a pipeline stage with timing and error handling."""
-        console.print(f"\n{'═' * 60}")
-        console.print(f"[bold bright_white]Stage: {name}[/bold bright_white]")
-        console.print(f"{'═' * 60}")
+        console.print(f"[cyan]▶ {name}[/cyan]")
 
         start = time.time()
         try:
             result = fn(*args, **kwargs)
             elapsed = time.time() - start
             self._stage_times.append((name, elapsed))
-            console.print(f"[green]✓ {name} completed in {elapsed:.1f}s[/green]")
+            console.print(f"[green]  ✓ {name} — {elapsed:.1f}s[/green]")
             return result
-        except Exception as e:
+        except Exception:
             elapsed = time.time() - start
             self._stage_times.append((name, elapsed))
-            console.print(f"[red]✗ {name} failed after {elapsed:.1f}s: {e}[/red]")
+            console.print(f"[red]  ✗ {name} — {elapsed:.1f}s[/red]")
             raise
 
     def _summary_text(self) -> str:
@@ -267,21 +262,21 @@ class FinetunePipeline:
         )
         namespace = self.config.get_ollama_namespace() or "(not set)"
         return (
-            f"[bold]Model[/bold]: {self.config.model_id}\n"
-            f"[bold]Method[/bold]: {self.config.method}\n"
-            f"[bold]PDFs[/bold]: {len(pdf_paths)} file(s)\n"
-            f"[bold]Auto HP[/bold]: {self.config.auto_hyperparams}\n"
-            f"[bold]Master[/bold]: {self.config.master_model} ({self.config.master_backend})\n"
-            f"[bold]Quant[/bold]: {self.config.quantisation}\n"
-            f"[bold]Ollama[/bold]: {ollama_status}\n"
-            f"[bold]Namespace[/bold]: {namespace}\n"
-            f"[bold]Output[/bold]: {self.config.output_dir}"
+            f"[cyan]Model[/cyan]:      {self.config.model_id}\n"
+            f"[cyan]Method[/cyan]:     {self.config.method}\n"
+            f"[cyan]PDFs[/cyan]:       {len(pdf_paths)} file(s)\n"
+            f"[cyan]Auto HP[/cyan]:    {self.config.auto_hyperparams}\n"
+            f"[cyan]Master[/cyan]:     {self.config.master_model} ({self.config.master_backend})\n"
+            f"[cyan]Quant[/cyan]:      {self.config.quantisation}\n"
+            f"[cyan]Ollama[/cyan]:     {ollama_status}\n"
+            f"[cyan]Namespace[/cyan]:  {namespace}\n"
+            f"[cyan]Output[/cyan]:     {self.config.output_dir}"
         )
 
     def _print_summary(self, model_name: str, total_time: float, gguf_path: Path) -> None:
         """Print a final summary of the pipeline run."""
-        table = Table(title="Pipeline Summary", show_header=True, header_style="bold cyan")
-        table.add_column("Stage", style="dim")
+        table = Table(show_header=True, header_style="bold", border_style="cyan")
+        table.add_column("Stage")
         table.add_column("Time", justify="right")
 
         for name, elapsed in self._stage_times:
@@ -291,7 +286,7 @@ class FinetunePipeline:
 
         console.print()
         console.print(table)
-        console.print(f"\n[bold green]GGUF file: {gguf_path}[/bold green]")
+        console.print(f"[dim]GGUF:[/dim] {gguf_path}")
 
         if not self.config.skip_ollama and "ollama" not in str(gguf_path).lower():
             namespace = self.config.get_ollama_namespace()
@@ -299,22 +294,18 @@ class FinetunePipeline:
             full_name = self.config.get_ollama_full_name()
 
             if namespace and self.config.ollama_push:
-                console.print(
-                    f"\n[bold green]Model pushed to Ollama registry![/bold green]\n"
-                    f"[bold]Pull on any device:[/bold]  ollama pull {full_name}\n"
-                    f"[bold]Run on any device:[/bold]  ollama run {full_name}\n"
-                    f"[dim]The model is also available locally as '{local_name}'.[/dim]"
-                )
+                console.print(Panel(
+                    f"[green]ollama pull {full_name}[/green]\n"
+                    f"[green]ollama run {full_name}[/green]",
+                    title="Pushed to registry",
+                    border_style="green",
+                ))
             else:
-                console.print(
-                    f"\n[bold green]Model '{local_name}' is ready in local Ollama![/bold green]"
-                )
-                console.print(
-                    "[dim]To make it available on other devices, set --ollama-namespace and re-run,[/dim]\n"
-                    "[dim]or manually push: ollama push yourname/model-name[/dim]"
-                )
-        else:
-            console.print("[dim]Load the GGUF with llama.cpp, Ollama, or any GGUF-compatible runtime.[/dim]")
+                console.print(Panel(
+                    f"[green]ollama run {local_name}[/green]",
+                    title="Local Ollama model ready",
+                    border_style="green",
+                ))
 
 
 # ---------------------------------------------------------------------------

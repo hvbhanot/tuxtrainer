@@ -43,18 +43,20 @@ def _handle_gated_repo_error(e: Exception, model_id: str) -> None:
 
     error_str = str(e).lower()
     if isinstance(e, GatedRepoError) or "gated" in error_str or "401" in error_str:
+        # Print the pretty message, then raise a clean exception
+        console.print(Panel(
+            f"Model '{model_id}' is gated on HuggingFace.\n\n"
+            "1. Accept the license: https://huggingface.co/" + model_id + "\n"
+            "2. Create a token: https://huggingface.co/settings/tokens\n"
+            "3. Set HF_TOKEN and restart the runtime\n\n"
+            "Non-gated alternatives:\n"
+            "  • unsloth/Llama-3.2-1B-Instruct\n"
+            "  • HuggingFaceTB/SmolLM2-1.7B-Instruct",
+            title="Gated Model",
+            border_style="red",
+        ))
         raise RuntimeError(
-            f"\n[bold red]Model '{model_id}' is gated on HuggingFace.[/bold red]\n"
-            "You need to:\n"
-            "  1. Accept the model license at "
-            f"[blue]https://huggingface.co/{model_id}[/blue]\n"
-            "  2. Create a HuggingFace token at [blue]https://huggingface.co/settings/tokens[/blue]\n"
-            "  3. Set it as a secret in Colab or export it:\n"
-            "     [dim]import os; os.environ['HF_TOKEN'] = 'your_token_here'[/dim]\n"
-            "  4. Restart the runtime and try again.\n"
-            "\nAlternatively, use a non-gated model such as:\n"
-            "  [dim]unsloth/Llama-3.2-1B-Instruct[/dim]\n"
-            "  [dim]HuggingFaceTB/SmolLM2-1.7B-Instruct[/dim]"
+            f"Model '{model_id}' is gated. Set HF_TOKEN or use a non-gated model."
         ) from e
 
 
@@ -76,7 +78,7 @@ def load_model_and_tokenizer(
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
     import torch
 
-    console.print(f"[bold blue]Loading model [cyan]{model_id}[/cyan]...[/bold blue]")
+    console.print(f"[cyan]Loading model {model_id}...[/cyan]")
 
     token = _hf_token()
 
@@ -122,7 +124,7 @@ def load_model_and_tokenizer(
     # Enable gradient checkpointing on the base model (before LoRA)
     model.enable_input_require_grads()
 
-    console.print("[green]Model loaded successfully.[/green]")
+    console.print("[green]  Model loaded[/green]")
     return model, tokenizer
 
 
@@ -135,13 +137,10 @@ def _load_with_unsloth(
     try:
         from unsloth import FastLanguageModel
     except ImportError:
-        console.print(
-            "[red]Unsloth is not installed. Install with: pip install unsloth[/red]\n"
-            "[yellow]Falling back to standard HuggingFace loading.[/yellow]"
-        )
+        console.print("[yellow]  Unsloth not found — falling back to standard HF loading[/yellow]")
         return load_model_and_tokenizer(model_id, max_seq_length, method, use_unsloth=False)
 
-    console.print(f"[bold blue]Loading model with [magenta]Unsloth[/magenta]: [cyan]{model_id}[/cyan]...[/bold blue]")
+    console.print(f"[cyan]Loading model with Unsloth: {model_id}...[/cyan]")
 
     load_in_4bit = method == FinetuneMethod.QLORA
     token = _hf_token()
@@ -157,7 +156,7 @@ def _load_with_unsloth(
         _handle_gated_repo_error(e, model_id)
         raise
 
-    console.print("[green]Model loaded with Unsloth.[/green]")
+    console.print("[green]  Model loaded[/green]")
     return model, tokenizer
 
 
@@ -187,7 +186,7 @@ def apply_lora_adapters(
                 use_gradient_checkpointing="unsloth",
                 random_state=42,
             )
-            console.print("[green]LoRA adapters applied (Unsloth-optimised).[/green]")
+            console.print("[green]  LoRA adapters applied[/green]")
             return model
         except ImportError:
             pass  # Fall through to standard PEFT
@@ -274,7 +273,7 @@ def format_dataset_for_training(
         desc="Tokenising",
     )
 
-    console.print(f"[green]Tokenised {len(tokenised_dataset)} examples.[/green]")
+    console.print(f"[green]  Tokenised {len(tokenised_dataset)} examples[/green]")
     return tokenised_dataset
 
 
@@ -348,7 +347,7 @@ def train(
     ))
 
     # Train!
-    console.print("\n[bold green]Starting training...[/bold green]\n")
+    console.print("[cyan]Starting training...[/cyan]")
     trainer.train(resume_from_checkpoint=config.resume_from_checkpoint)
 
     # Save the final model
@@ -357,7 +356,7 @@ def train(
     trainer.save_model(str(final_dir))
     tokenizer.save_pretrained(str(final_dir))
 
-    console.print(f"[green]Adapter saved to {final_dir}[/green]")
+    console.print(f"[green]  Adapter saved[/green]")
     return final_dir
 
 
@@ -385,7 +384,7 @@ def merge_adapter_to_base(
     merged_dir = output_dir / "merged_model"
     merged_dir.mkdir(parents=True, exist_ok=True)
 
-    console.print(f"[blue]Loading base model for merging...[/blue]")
+    console.print("[cyan]Loading base model for merging...[/cyan]")
 
     token = _hf_token()
     try:
@@ -399,15 +398,15 @@ def merge_adapter_to_base(
         )
 
         # Load adapter
-        console.print(f"[blue]Loading adapter from {adapter_path}...[/blue]")
+        console.print(f"[cyan]Loading adapter from {adapter_path}...[/cyan]")
         model = PeftModel.from_pretrained(base_model, str(adapter_path))
 
         # Merge
-        console.print("[blue]Merging adapter weights into base model...[/blue]")
+        console.print("[cyan]Merging adapter weights...[/cyan]")
         model = model.merge_and_unload()
 
         # Save
-        console.print(f"[blue]Saving merged model to {merged_dir}...[/blue]")
+        console.print(f"[cyan]Saving merged model to {merged_dir}...[/cyan]")
         model.save_pretrained(str(merged_dir), safe_serialization=True)
 
         tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, token=token)
@@ -416,5 +415,5 @@ def merge_adapter_to_base(
         _handle_gated_repo_error(e, model_id)
         raise
 
-    console.print(f"[green]Merged model saved to {merged_dir}[/green]")
+    console.print(f"[green]  Merged model saved[/green]")
     return merged_dir

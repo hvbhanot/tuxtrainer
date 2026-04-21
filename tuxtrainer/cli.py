@@ -255,26 +255,9 @@ def run(**kwargs):
     pipeline = FinetunePipeline(config)
 
     try:
-        model_name = pipeline.run()
-        from tuxtrainer.ollama_pusher import _is_colab, chat_with_model
-        namespace = config.get_ollama_namespace()
-        local_name = config.get_ollama_model_name()
-        full_name = config.get_ollama_full_name()
-
-        if _is_colab():
-            console.print(f"\n[bold green]Done! Test it with the Web API:[/bold green]")
-            console.print(f"[dim]  from tuxtrainer.ollama_pusher import chat_with_model")
-            console.print(f"  chat_with_model('{local_name}', 'Hello!')[/dim]")
-            if namespace:
-                console.print(f"\n[bold]Pull on any device:[/bold] ollama pull {full_name}")
-        else:
-            if namespace and config.ollama_push and not config.skip_ollama:
-                console.print(f"\n[bold green]Done! Pull on any device: ollama pull {full_name}[/bold green]")
-                console.print(f"[dim]Run locally: ollama run {local_name}[/dim]")
-            else:
-                console.print(f"\n[bold green]Done! Run: ollama run {local_name}[/bold green]")
-    except Exception as e:
-        console.print(f"\n[bold red]Pipeline failed: {e}[/bold red]")
+        pipeline.run()
+    except Exception:
+        console.print("[red]Pipeline failed — see error above.[/red]")
         sys.exit(1)
 
 
@@ -312,10 +295,14 @@ def prep(**kwargs):
         kwargs.get("data_format", "instruction"),
     )
 
-    console.print(f"\n[green]Dataset stats:[/green]")
-    console.print(f"  Chunks: {stats.total_chunks}")
-    console.print(f"  Estimated tokens: {stats.total_tokens_estimate:,}")
-    console.print(f"  Avg tokens/chunk: {stats.avg_chunk_tokens:.0f}")
+    console.print(Panel(
+        f"Chunks: {stats.total_chunks}\n"
+        f"Tokens: {stats.total_tokens_estimate:,}\n"
+        f"Avg/chunk: {stats.avg_chunk_tokens:.0f}",
+        title="Dataset",
+        border_style="green",
+        padding=(0, 1),
+    ))
 
 
 @main.command()
@@ -432,10 +419,10 @@ def push(**kwargs):
 @main.command()
 def info():
     """Show system info and check dependencies."""
-    table = Table(title="System Info", show_header=True, header_style="bold cyan")
-    table.add_column("Component", style="dim")
+    table = Table(show_header=True, header_style="bold", border_style="cyan")
+    table.add_column("Component")
     table.add_column("Status", justify="center")
-    table.add_column("Version / Details")
+    table.add_column("Version")
 
     checks = [
         ("Python", _check_python),

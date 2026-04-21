@@ -166,11 +166,12 @@ class GGUFConverter:
         quantised_gguf = output_dir / f"{name}-{self.quantisation.value.lower()}.gguf"
 
         console.print(Panel(
-            f"[bold]Input[/bold]: {model_dir}\n"
-            f"[bold]Output[/bold]: {quantised_gguf}\n"
-            f"[bold]Quantisation[/bold]: {self.quantisation.value}",
+            f"[cyan]Input[/cyan]:  {model_dir}\n"
+            f"[cyan]Output[/cyan]: {quantised_gguf}\n"
+            f"[cyan]Quant[/cyan]:  {self.quantisation.value}",
             title="GGUF Conversion",
-            border_style="magenta",
+            border_style="cyan",
+            padding=(0, 1),
         ))
 
         # Step 1: Convert to F16 GGUF
@@ -184,7 +185,7 @@ class GGUFConverter:
         else:
             quantised_gguf = f16_gguf
 
-        console.print(f"\n[green]GGUF model saved to {quantised_gguf}[/green]")
+        console.print(f"[green]  GGUF saved[/green]")
         return quantised_gguf
 
     def _convert_to_f16(self, model_dir: Path, output_path: Path) -> None:
@@ -228,14 +229,14 @@ class GGUFConverter:
             "--outtype", "f16",
         ]
 
-        console.print(f"[blue]Running: {' '.join(cmd)}[/blue]")
+        console.print("[cyan]Converting to F16 GGUF...[/cyan]")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
         if result.returncode != 0:
             logger.error("Conversion stderr: %s", result.stderr)
             raise RuntimeError(f"GGUF conversion failed: {result.stderr[:500]}")
 
-        console.print(f"[green]F16 GGUF created: {output_path}[/green]")
+        console.print("[green]  F16 GGUF created[/green]")
 
     def _convert_with_python(self, model_dir: Path, output_path: Path) -> None:
         """Convert using Python libraries directly (experimental)."""
@@ -255,7 +256,7 @@ class GGUFConverter:
         except ImportError:
             from gguf import GGUFWriter
 
-        console.print("[blue]Converting with gguf package...[/blue]")
+        console.print("[cyan]Converting with gguf package...[/cyan]")
 
         # Load model
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -281,10 +282,7 @@ class GGUFConverter:
         """Apply quantisation to an F16 GGUF file."""
         quantise_bin = _find_quantise_bin()
         if not quantise_bin:
-            console.print(
-                "[yellow]llama-quantize not found — copying F16 GGUF as-is.\n"
-                "For quantisation, install llama.cpp and ensure llama-quantize is in PATH.[/yellow]"
-            )
+            console.print("[yellow]llama-quantize not found — copying F16 GGUF as-is[/yellow]")
             shutil.copy2(input_path, output_path)
             return
 
@@ -295,11 +293,11 @@ class GGUFConverter:
             self.quantisation.value,
         ]
 
-        console.print(f"[blue]Quantising: {' '.join(cmd)}[/blue]")
+        console.print(f"[cyan]Quantising to {self.quantisation.value}...[/cyan]")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
         if result.returncode != 0:
             logger.error("Quantisation stderr: %s", result.stderr)
             raise RuntimeError(f"GGUF quantisation failed: {result.stderr[:500]}")
 
-        console.print(f"[green]Quantised GGUF created: {output_path}[/green]")
+        console.print("[green]  Quantised GGUF created[/green]")
