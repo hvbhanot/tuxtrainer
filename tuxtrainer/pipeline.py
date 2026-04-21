@@ -182,6 +182,7 @@ class FinetunePipeline:
             model,
             hyperparams,
             use_unsloth=self.config.use_unsloth,
+            model_id=self.config.model_id,
         )
 
         # Format dataset

@@ -65,6 +65,11 @@ RULES:
 6. Always set bf16=true for Ampere+ GPUs (A100, RTX 30xx/40xx), fp16=true
    only for older GPUs (V100, T4).
 7. gradient_checkpointing should be true when VRAM is tight.
+8. CRITICAL — lora_target_modules must use short names that match the
+   model's inner linear layers (e.g. "q_proj", "k_proj", "v_proj",
+   "o_proj", "gate_proj", "up_proj", "down_proj").  The pipeline
+   automatically resolves these against the real module tree, so even
+   wrapped architectures (Gemma 4, etc.) work correctly.
 """
 
 MASTER_USER_PROMPT_TEMPLATE = """\
@@ -79,6 +84,7 @@ MASTER_USER_PROMPT_TEMPLATE = """\
 ## Model
 - HuggingFace model ID: {model_id}
 - Fine-tuning method: {method}
+- Suggested target modules: {suggested_target_modules}
 
 ## Hardware
 - Detected GPU: {gpu_info}
@@ -377,6 +383,8 @@ class HyperparamSelector:
 
         # Build the prompt
         gpu_info, vram_gb = detect_gpu_info()
+        from tuxtrainer.finetuner import guess_target_modules_from_model_id
+        suggested_targets = guess_target_modules_from_model_id(self.config.model_id)
         user_prompt = MASTER_USER_PROMPT_TEMPLATE.format(
             total_chunks=dataset_stats.total_chunks,
             total_tokens=dataset_stats.total_tokens_estimate,
@@ -387,6 +395,7 @@ class HyperparamSelector:
             data_format=dataset_stats.format,
             model_id=self.config.model_id,
             method=self.config.method,
+            suggested_target_modules=suggested_targets,
             gpu_info=gpu_info,
             vram_gb=vram_gb,
         )

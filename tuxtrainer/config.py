@@ -72,13 +72,19 @@ class HyperParams(BaseModel):
         description="Dropout probability on LoRA layers.",
     )
 
-    # --- Target modules (default for LLaMA-style models) ---
+    # --- Target modules (auto-detected per model at apply-time) ---
     lora_target_modules: list[str] = Field(
         default=[
             "q_proj", "k_proj", "v_proj", "o_proj",
             "gate_proj", "up_proj", "down_proj",
         ],
-        description="Which linear layers to apply LoRA adapters to.",
+        description=(
+            "Which linear layers to apply LoRA adapters to. "
+            "Defaults are for LLaMA/Mistral/Qwen-style models. "
+            "The pipeline auto-detects and overrides these for other "
+            "architectures (Gemma, Phi, Falcon, etc.) at apply-time, "
+            "resolving wrapper modules like Gemma4ClippableLinear automatically."
+        ),
     )
 
     # --- Training ---

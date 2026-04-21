@@ -354,7 +354,7 @@ def train(**kwargs):
         method=config.method,
         use_unsloth=config.use_unsloth,
     )
-    model = apply_lora_adapters(model, config.hyperparams, config.use_unsloth)
+    model = apply_lora_adapters(model, config.hyperparams, config.use_unsloth, model_id=config.model_id)
     tokenised = format_dataset_for_training(
         dataset, tokenizer, config.hyperparams, config.data_format,
     )
