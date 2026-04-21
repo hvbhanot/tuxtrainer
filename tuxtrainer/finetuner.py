@@ -783,11 +783,16 @@ def merge_adapter_to_base(
 
     token = _hf_token()
     try:
+        # Use GPU if available for much faster merging, otherwise fall back to CPU
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+
         # Load base model in full precision for merging
         base_model = AutoModelForCausalLM.from_pretrained(
             model_id,
-            torch_dtype=torch.bfloat16,
-            device_map="cpu",  # Merge on CPU to avoid OOM
+            torch_dtype=dtype,
+            device_map=device,
+            low_cpu_mem_usage=True,
             trust_remote_code=True,
             token=token,
         )
@@ -798,6 +803,7 @@ def merge_adapter_to_base(
 
         # Merge
         console.print("[cyan]Merging adapter weights...[/cyan]")
+        console.print("[dim]  (This may take a few minutes for 7B+ models)[/dim]")
         model = model.merge_and_unload()
 
         # Save
