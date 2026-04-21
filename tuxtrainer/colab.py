@@ -203,12 +203,17 @@ def setup_colab(
     if install_llama_cpp:
         console.print("[bold blue]Installing llama.cpp for GGUF conversion...[/bold blue]")
         try:
+            # Install cmake first (required by newer llama.cpp versions)
+            _run("apt-get update -qq && apt-get install -y -qq cmake build-essential", timeout=120)
+
             # Remove existing clone to avoid git "already exists" errors on re-runs
             _run(
                 'cd /content && '
                 'rm -rf llama.cpp && '
                 'git clone --depth 1 https://github.com/ggerganov/llama.cpp && '
-                'cd llama.cpp && make -j$(nproc)',
+                'cd llama.cpp && '
+                'cmake -B build -DCMAKE_BUILD_TYPE=Release && '
+                'cmake --build build --config Release -j$(nproc)',
                 timeout=300,
             )
             os.environ["LLAMA_CPP_PATH"] = "/content/llama.cpp"

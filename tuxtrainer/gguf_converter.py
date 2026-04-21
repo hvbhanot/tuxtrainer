@@ -41,14 +41,20 @@ def _find_llama_cpp() -> Optional[Path]:
 
     Looks in:
       1. LLAMA_CPP_PATH env var
-      2. ~/llama.cpp
-      3. /usr/local/bin/llama-convert
-      4. pip-installed llama-cpp-python (has convert scripts)
+      2. /content/llama.cpp (Colab default)
+      3. ~/llama.cpp
+      4. /usr/local/bin/llama-convert
+      5. pip-installed llama-cpp-python (has convert scripts)
     """
     # Env var override
     env_path = os.environ.get("LLAMA_CPP_PATH")
     if env_path and Path(env_path).exists():
         return Path(env_path)
+
+    # Colab default location
+    colab_llama = Path("/content/llama.cpp")
+    if colab_llama.exists():
+        return colab_llama
 
     # Home directory
     home_llama = Path.home() / "llama.cpp"
@@ -107,8 +113,8 @@ def _find_convert_script() -> Optional[Path]:
 def _find_quantise_bin() -> Optional[Path]:
     """Find the llama-quantize binary."""
     for candidate in [
-        Path.home() / "llama.cpp" / "llama-quantize",
         Path.home() / "llama.cpp" / "build" / "bin" / "llama-quantize",
+        Path.home() / "llama.cpp" / "llama-quantize",
         Path("/usr/local/bin/llama-quantize"),
         Path("/usr/bin/llama-quantize"),
     ]:
