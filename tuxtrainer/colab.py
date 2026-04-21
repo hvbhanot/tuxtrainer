@@ -127,6 +127,14 @@ def setup_colab(
             "Some steps may not work as expected.[/yellow]"
         )
 
+    # ── Step 0: Upgrade transformers for newest model architectures ────
+    console.print("[bold blue]Upgrading transformers for latest model support...[/bold blue]")
+    try:
+        _run("pip install -q --upgrade transformers accelerate", timeout=120, check=False)
+        console.print("[green]Transformers upgraded.[/green]")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        console.print("[yellow]Transformers upgrade skipped.[/yellow]")
+
     # ── Step 1: Install Ollama (optional) ──────────────────────────────
     if install_ollama:
         # Check if already installed

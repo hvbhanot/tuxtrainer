@@ -37,13 +37,14 @@ def _hf_token() -> Optional[str]:
     return os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
 
 
-def _handle_gated_repo_error(e: Exception, model_id: str) -> None:
-    """Raise a user-friendly error when a gated model cannot be accessed."""
+def _handle_model_load_error(e: Exception, model_id: str) -> None:
+    """Raise a user-friendly error for common model loading failures."""
     from huggingface_hub.utils import GatedRepoError
 
     error_str = str(e).lower()
+
+    # Gated model
     if isinstance(e, GatedRepoError) or "gated" in error_str or "401" in error_str:
-        # Print the pretty message, then raise a clean exception
         console.print(Panel(
             f"Model '{model_id}' is gated on HuggingFace.\n\n"
             "1. Accept the license: https://huggingface.co/" + model_id + "\n"
@@ -57,6 +58,22 @@ def _handle_gated_repo_error(e: Exception, model_id: str) -> None:
         ))
         raise RuntimeError(
             f"Model '{model_id}' is gated. Set HF_TOKEN or use a non-gated model."
+        ) from e
+
+    # Unsupported architecture
+    if "does not recognize this architecture" in error_str or "model_type" in error_str:
+        console.print(Panel(
+            f"Model '{model_id}' uses an architecture not supported by your transformers version.\n\n"
+            "Fixes:\n"
+            "  1. Upgrade transformers:\n"
+            "     [dim]pip install --upgrade transformers accelerate[/dim]\n"
+            "  2. Or use a model with a known architecture:\n"
+            "     [dim]unsloth/Llama-3.2-1B-Instruct[/dim]",
+            title="Unsupported Model Architecture",
+            border_style="red",
+        ))
+        raise RuntimeError(
+            f"Model '{model_id}' architecture not supported. Upgrade transformers or use a different model."
         ) from e
 
 
@@ -118,7 +135,7 @@ def load_model_and_tokenizer(
                 token=token,
             )
     except Exception as e:
-        _handle_gated_repo_error(e, model_id)
+        _handle_model_load_error(e, model_id)
         raise
 
     # Enable gradient checkpointing on the base model (before LoRA)
@@ -153,7 +170,7 @@ def _load_with_unsloth(
             token=token,
         )
     except Exception as e:
-        _handle_gated_repo_error(e, model_id)
+        _handle_model_load_error(e, model_id)
         raise
 
     console.print("[green]  Model loaded[/green]")
@@ -412,7 +429,7 @@ def merge_adapter_to_base(
         tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, token=token)
         tokenizer.save_pretrained(str(merged_dir))
     except Exception as e:
-        _handle_gated_repo_error(e, model_id)
+        _handle_model_load_error(e, model_id)
         raise
 
     console.print(f"[green]  Merged model saved[/green]")
