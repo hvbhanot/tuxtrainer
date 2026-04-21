@@ -596,8 +596,20 @@ def format_dataset_for_training(
 
     For "instruction" format, uses the Alpaca prompt template.
     For "completion" format, simply tokenises the text field.
+
+    If the provided ``tokenizer`` is actually a multimodal processor (e.g. for
+    vision-language models), the inner text tokenizer is extracted so that
+    text-only fine-tuning works correctly.
     """
     import torch
+
+    # Detect multimodal processors and extract the inner text tokenizer.
+    # Processors have a ``.tokenizer`` attribute pointing to the real tokenizer
+    # and usually expose an ``.image_processor`` attribute.
+    if hasattr(tokenizer, "tokenizer") and hasattr(tokenizer, "image_processor"):
+        tok = tokenizer.tokenizer
+    else:
+        tok = tokenizer
 
     def _format_instruction_sample(example: dict) -> dict:
         """Alpaca-style formatting."""
@@ -612,7 +624,7 @@ def format_dataset_for_training(
                 f"### Instruction:\n{example['instruction']}\n\n"
                 f"### Response:\n{example['output']}"
             )
-        result = tokenizer(
+        result = tok(
             prompt,
             truncation=True,
             max_length=hyperparams.max_seq_length,
@@ -623,7 +635,7 @@ def format_dataset_for_training(
 
     def _format_completion_sample(example: dict) -> dict:
         """Plain text completion formatting."""
-        result = tokenizer(
+        result = tok(
             example["text"],
             truncation=True,
             max_length=hyperparams.max_seq_length,
