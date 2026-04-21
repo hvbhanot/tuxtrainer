@@ -203,8 +203,10 @@ def setup_colab(
     if install_llama_cpp:
         console.print("[bold blue]Installing llama.cpp for GGUF conversion...[/bold blue]")
         try:
+            # Remove existing clone to avoid git "already exists" errors on re-runs
             _run(
                 'cd /content && '
+                'rm -rf llama.cpp && '
                 'git clone --depth 1 https://github.com/ggerganov/llama.cpp && '
                 'cd llama.cpp && make -j$(nproc)',
                 timeout=300,
