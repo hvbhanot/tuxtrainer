@@ -14,7 +14,7 @@ Usage::
     from tuxtrainer import FinetuneConfig, FinetunePipeline
 
     config = FinetuneConfig(
-        model_id="meta-llama/Llama-3.1-8B",
+        model_id="unsloth/Llama-3.2-1B-Instruct",
         pdf_paths=["doc1.pdf", "doc2.pdf"],
         auto_hyperparams=True,
     )
@@ -62,7 +62,7 @@ class FinetunePipeline:
 
     Usage::
 
-        config = FinetuneConfig(model_id="meta-llama/Llama-3.1-8B", ...)
+        config = FinetuneConfig(model_id="unsloth/Llama-3.2-1B-Instruct", ...)
         pipeline = FinetunePipeline(config)
         model_name = pipeline.run()
     """
@@ -330,7 +330,7 @@ def finetune_and_push(config: FinetuneConfig) -> str:
         from tuxtrainer.config import FinetuneConfig
 
         config = FinetuneConfig(
-            model_id="meta-llama/Llama-3.1-8B",
+            model_id="unsloth/Llama-3.2-1B-Instruct",
             pdf_paths=["doc1.pdf"],
         )
         model_name = finetune_and_push(config)

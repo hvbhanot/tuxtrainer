@@ -107,6 +107,9 @@ def setup_colab(
     master model uses the Ollama Cloud API (set ``OLLAMA_API_KEY``) — it
     doesn't need a local Ollama instance.
 
+    Also installs Unsloth (default training engine) and llama.cpp for GGUF
+    conversion.
+
     Args:
         install_ollama: Install Ollama locally on the Colab VM.
             Default is True because the pipeline pushes to the registry.
@@ -199,7 +202,20 @@ def setup_colab(
             )
             console.print(f"[green]Model '{pull_master_model}' pulled.[/green]")
 
-    # ── Step 2: Install llama.cpp for GGUF conversion ──────────────────
+    # ── Step 2: Install Unsloth (default engine) ───────────────────────
+    console.print("[bold blue]Installing Unsloth for fast training...[/bold blue]")
+    try:
+        _run(
+            'pip install -q --no-deps "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth"',
+            timeout=300,
+            check=False,
+        )
+        console.print("[green]Unsloth installed.[/green]")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        console.print(f"[yellow]Unsloth install failed: {e}[/yellow]")
+        console.print("[yellow]Falling back to standard HuggingFace training (slower).[/yellow]")
+
+    # ── Step 3: Install llama.cpp for GGUF conversion ──────────────────
     if install_llama_cpp:
         console.print("[bold blue]Installing llama.cpp for GGUF conversion...[/bold blue]")
         try:
@@ -256,7 +272,10 @@ def setup_colab(
     console.print("\n[dim]Now run the pipeline:[/dim]")
     console.print(
         "[dim]  from tuxtrainer import FinetuneConfig, FinetunePipeline\n"
-        "  config = FinetuneConfig(model_id='...', pdf_paths=[...])\n"
+        "  config = FinetuneConfig(\n"
+        "      model_id='unsloth/Llama-3.2-1B-Instruct',\n"
+        "      pdf_paths=[...]\n"
+        "  )\n"
         "  FinetunePipeline(config).run()\n"
         "  # → ollama pull your-namespace/model-name[/dim]"
     )

@@ -40,7 +40,7 @@ def main():
     # ── Configuration ──────────────────────────────────────────────────
     config = FinetuneConfig(
         # The HuggingFace model to fine-tune
-        model_id="meta-llama/Llama-3.1-8B",
+        model_id="unsloth/Llama-3.2-1B-Instruct",
 
         # Fine-tuning method (qlora = 4-bit quantised, most VRAM efficient)
         method=FinetuneMethod.QLORA,

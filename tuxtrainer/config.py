@@ -163,7 +163,7 @@ class FinetuneConfig(BaseModel):
     # --- Model ---
     model_id: str = Field(
         ...,
-        description="HuggingFace model ID, e.g. 'meta-llama/Llama-3.1-8B'.",
+        description="HuggingFace model ID. Unsloth models are recommended, e.g. 'unsloth/Llama-3.2-1B-Instruct'.",
     )
     method: FinetuneMethod = Field(
         default=FinetuneMethod.QLORA,

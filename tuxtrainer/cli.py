@@ -43,7 +43,7 @@ def _common_options(f):
         "--model", "-m",
         envvar="HF_MODEL_ID",
         required=True,
-        help="HuggingFace model ID (e.g. meta-llama/Llama-3.1-8B).",
+        help="HuggingFace model ID. Unsloth models recommended (e.g. unsloth/Llama-3.2-1B-Instruct).",
     )(f)
     f = click.option(
         "--method",

@@ -62,7 +62,7 @@ def load_model_and_tokenizer(
     model_id: str,
     max_seq_length: int = 2048,
     method: FinetuneMethod = FinetuneMethod.QLORA,
-    use_unsloth: bool = False,
+    use_unsloth: bool = True,
 ):
     """Load the base model and tokenizer.
 

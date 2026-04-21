@@ -46,19 +46,19 @@ class TestFinetuneConfig:
     """Tests for the FinetuneConfig model."""
 
     def test_minimal_config(self):
-        config = FinetuneConfig(model_id="meta-llama/Llama-3.1-8B")
-        assert config.model_id == "meta-llama/Llama-3.1-8B"
+        config = FinetuneConfig(model_id="unsloth/Llama-3.2-1B-Instruct")
+        assert config.model_id == "unsloth/Llama-3.2-1B-Instruct"
         assert config.method == FinetuneMethod.QLORA
         assert config.auto_hyperparams is True
 
     def test_ollama_model_name_default(self):
-        config = FinetuneConfig(model_id="meta-llama/Llama-3.1-8B")
+        config = FinetuneConfig(model_id="unsloth/Llama-3.2-1B-Instruct")
         name = config.get_ollama_model_name()
         assert name == "llama-3.1-8b-finetuned"
 
     def test_ollama_model_name_custom(self):
         config = FinetuneConfig(
-            model_id="meta-llama/Llama-3.1-8B",
+            model_id="unsloth/Llama-3.2-1B-Instruct",
             ollama_model_name="my-custom-model",
         )
         assert config.get_ollama_model_name() == "my-custom-model"

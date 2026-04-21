@@ -44,7 +44,7 @@ from tuxtrainer.config import FinetuneMethod, Quantisation
 from pathlib import Path
 
 config = FinetuneConfig(
-    model_id="meta-llama/Llama-3.1-8B",
+    model_id="unsloth/Llama-3.2-1B-Instruct",
     method=FinetuneMethod.QLORA,
     pdf_paths=[Path("my_document.pdf")],
     # ollama_push=True is the default — model is pushed to registry
@@ -94,34 +94,34 @@ The default behaviour is to **push the model to the Ollama registry** so it's av
 ```bash
 # Full pipeline with registry push (default)
 tuxtrainer run \
-  --model meta-llama/Llama-3.1-8B \
+  --model unsloth/Llama-3.2-1B-Instruct \
   --pdf doc.pdf \
   --ollama-namespace myuser
 # → ollama pull myuser/llama-3.1-8b-finetuned
 
 # With explicit API keys
 tuxtrainer run \
-  --model meta-llama/Llama-3.1-8B \
+  --model unsloth/Llama-3.2-1B-Instruct \
   --pdf doc.pdf \
   --ollama-namespace myuser \
   --master-api-key sk-xxxxx
 
 # Local only (no registry push)
 tuxtrainer run \
-  --model meta-llama/Llama-3.1-8B \
+  --model unsloth/Llama-3.2-1B-Instruct \
   --pdf doc.pdf \
   --no-ollama-push
 # → ollama run llama-3.1-8b-finetuned
 
 # Skip Ollama entirely (just get GGUF)
 tuxtrainer run \
-  --model meta-llama/Llama-3.1-8B \
+  --model unsloth/Llama-3.2-1B-Instruct \
   --pdf doc.pdf \
   --skip-ollama
 
 # Use a different master model backend
 tuxtrainer run \
-  --model meta-llama/Llama-3.1-8B \
+  --model unsloth/Llama-3.2-1B-Instruct \
   --pdf doc.pdf \
   --ollama-namespace myuser \
   --master-backend openai
@@ -133,10 +133,10 @@ tuxtrainer push --gguf model.gguf --name my-expert --namespace myuser
 tuxtrainer prep --pdf-dir ./documents/ --output dataset.jsonl
 
 # Fine-tune from a dataset
-tuxtrainer train --model meta-llama/Llama-3.1-8B --dataset dataset.jsonl
+tuxtrainer train --model unsloth/Llama-3.2-1B-Instruct --dataset dataset.jsonl
 
 # Export to GGUF
-tuxtrainer export --adapter-path ./finetune_output/final_adapter --model meta-llama/Llama-3.1-8B
+tuxtrainer export --adapter-path ./finetune_output/final_adapter --model unsloth/Llama-3.2-1B-Instruct
 
 # Check system info
 tuxtrainer info
