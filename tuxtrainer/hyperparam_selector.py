@@ -201,7 +201,23 @@ def _call_ollama_cloud(
     resp.raise_for_status()
 
     data = resp.json()
-    return data.get("message", {}).get("content", "")
+
+    # Ollama returns errors in the JSON body with HTTP 200
+    if "error" in data:
+        error_msg = data["error"]
+        if "not found" in error_msg.lower():
+            raise RuntimeError(
+                f"Model '{model}' is not available in Ollama Cloud. "
+                f"Check the model name or try a different model."
+            )
+        raise RuntimeError(f"Ollama Cloud API error: {error_msg}")
+
+    content = data.get("message", {}).get("content", "")
+    if not content or not content.strip():
+        raise RuntimeError(
+            f"Model '{model}' returned an empty response from Ollama Cloud."
+        )
+    return content
 
 
 def _call_ollama(
@@ -229,7 +245,25 @@ def _call_ollama(
     resp = requests.post(url, json=payload, timeout=timeout)
     resp.raise_for_status()
     data = resp.json()
-    return data.get("message", {}).get("content", "")
+
+    # Ollama returns errors in the JSON body with HTTP 200
+    if "error" in data:
+        error_msg = data["error"]
+        if "not found" in error_msg.lower():
+            raise RuntimeError(
+                f"Model '{model}' is not available in local Ollama. "
+                f"Pull it first: ollama pull {model}"
+            )
+        raise RuntimeError(f"Ollama API error: {error_msg}")
+
+    content = data.get("message", {}).get("content", "")
+    if not content or not content.strip():
+        raise RuntimeError(
+            f"Model '{model}' returned an empty response. "
+            "The model may be loading or misconfigured. "
+            f"Try pulling it again: ollama pull {model}"
+        )
+    return content
 
 
 def _call_openai(
