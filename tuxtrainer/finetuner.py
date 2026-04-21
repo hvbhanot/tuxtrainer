@@ -105,7 +105,6 @@ def load_model_and_tokenizer(
                 quantization_config=bnb_config,
                 device_map="auto",
                 trust_remote_code=True,
-                max_seq_length=max_seq_length,
                 token=token,
             )
         else:
@@ -114,7 +113,6 @@ def load_model_and_tokenizer(
                 device_map="auto",
                 trust_remote_code=True,
                 torch_dtype=torch.bfloat16,
-                max_seq_length=max_seq_length,
                 token=token,
             )
     except Exception as e:
