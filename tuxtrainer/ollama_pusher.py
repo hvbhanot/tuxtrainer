@@ -161,9 +161,24 @@ def install_ollama_colab() -> bool:
     Runs the official install script and starts the server in the
     background.  This only works on Linux (which Colab VMs are).
 
+    The Ollama install script requires ``zstd`` for extraction, which
+    is not pre-installed on Colab VMs, so we install it first.
+
     Returns:
         True if Ollama was installed and started successfully.
     """
+    # Install zstd first (required by Ollama's install script on Colab)
+    console.print("[blue]Installing zstd (required by Ollama installer)...[/blue]")
+    try:
+        subprocess.run(
+            ['bash', '-c', 'apt-get update -qq && apt-get install -y -qq zstd'],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        console.print("[yellow]zstd install failed — Ollama install may fail without it.[/yellow]")
+
     console.print("[bold blue]Installing Ollama on Colab VM...[/bold blue]")
 
     # Download and run the official install script
@@ -172,7 +187,7 @@ def install_ollama_colab() -> bool:
             ['bash', '-c', 'curl -fsSL https://ollama.com/install.sh | sh'],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=180,
         )
         if result.returncode != 0:
             logger.error("Ollama install failed: %s", result.stderr)

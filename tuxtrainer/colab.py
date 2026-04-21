@@ -17,6 +17,7 @@ After pushing, you can pull the model on any device:
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -34,6 +35,37 @@ def _is_colab() -> bool:
     except ImportError:
         pass
     return bool(os.environ.get("COLAB_GPU") or os.environ.get("COLAB_TPU_ADDR"))
+
+
+def _run(cmd: str, timeout: int = 180, check: bool = True) -> subprocess.CompletedProcess:
+    """Run a bash command with sensible defaults."""
+    return subprocess.run(
+        ["bash", "-c", cmd],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=check,
+    )
+
+
+def _install_system_deps() -> None:
+    """Install system-level dependencies that Ollama needs on Colab.
+
+    The Ollama install script requires ``zstd`` for extracting its
+    tarball.  Colab VMs don't ship with it, so we install it first.
+    """
+    console.print("[bold blue]Installing system dependencies (zstd)...[/bold blue]")
+    try:
+        _run("apt-get update -qq && apt-get install -y -qq zstd", timeout=120)
+        console.print("[green]zstd installed.[/green]")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        console.print(f"[yellow]zstd install failed (non-fatal): {e}[/yellow]")
+        console.print("[yellow]Ollama installation may fail without zstd.[/yellow]")
+
+
+def _is_ollama_installed() -> bool:
+    """Check if the ``ollama`` binary is on PATH."""
+    return shutil.which("ollama") is not None
 
 
 def setup_colab(
@@ -69,18 +101,45 @@ def setup_colab(
 
     # ── Step 1: Install Ollama (optional) ──────────────────────────────
     if install_ollama:
-        console.print("[bold blue]Installing Ollama on Colab VM...[/bold blue]")
-        try:
-            result = subprocess.run(
-                ['bash', '-c', 'curl -fsSL https://ollama.com/install.sh | sh'],
-                capture_output=True,
-                text=True,
-                timeout=180,
+        # Check if already installed
+        if _is_ollama_installed():
+            console.print("[green]Ollama is already installed.[/green]")
+        else:
+            # Install system deps first (zstd is required by Ollama's install script)
+            _install_system_deps()
+
+            console.print("[bold blue]Installing Ollama on Colab VM...[/bold blue]")
+            try:
+                result = _run(
+                    'curl -fsSL https://ollama.com/install.sh | sh',
+                    timeout=180,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    console.print(f"[red]Ollama install failed (exit {result.returncode}).[/red]")
+                    if result.stderr:
+                        console.print(f"[dim]{result.stderr[:500]}[/dim]")
+                    console.print(
+                        "[yellow]Try installing manually:[/yellow]\n"
+                        "  [dim]!apt-get install -y zstd && curl -fsSL https://ollama.com/install.sh | sh[/dim]"
+                    )
+                    raise RuntimeError(
+                        f"Ollama installation failed (exit code {result.returncode}). "
+                        "See error above. You may need to install zstd first: "
+                        "!apt-get install -y zstd"
+                    )
+                console.print("[green]Ollama installed.[/green]")
+            except subprocess.TimeoutExpired as e:
+                console.print(f"[red]Ollama install timed out: {e}[/red]")
+                raise
+
+        # Verify the binary exists before trying to start it
+        if not _is_ollama_installed():
+            raise RuntimeError(
+                "Ollama binary not found after installation. "
+                "The install may have failed silently. "
+                "Try manually: !apt-get install -y zstd && curl -fsSL https://ollama.com/install.sh | sh"
             )
-            console.print("[green]Ollama installed.[/green]")
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            console.print(f"[red]Ollama install failed: {e}[/red]")
-            raise
 
         # Start the server in the background
         console.print("[blue]Starting Ollama server...[/blue]")
@@ -117,13 +176,10 @@ def setup_colab(
     if install_llama_cpp:
         console.print("[bold blue]Installing llama.cpp for GGUF conversion...[/bold blue]")
         try:
-            subprocess.run(
-                ['bash', '-c',
-                 'cd /content && '
-                 'git clone --depth 1 https://github.com/ggerganov/llama.cpp && '
-                 'cd llama.cpp && make -j$(nproc)'],
-                capture_output=True,
-                text=True,
+            _run(
+                'cd /content && '
+                'git clone --depth 1 https://github.com/ggerganov/llama.cpp && '
+                'cd llama.cpp && make -j$(nproc)',
                 timeout=300,
             )
             os.environ["LLAMA_CPP_PATH"] = "/content/llama.cpp"
