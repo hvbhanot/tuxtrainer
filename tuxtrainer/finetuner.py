@@ -684,6 +684,15 @@ def train(
     output_dir = Path(config.output_dir) / "checkpoints"
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Convert warmup_ratio to warmup_steps (warmup_ratio is deprecated in transformers v5.2)
+    import math
+    num_examples = len(tokenised_dataset)
+    steps_per_epoch = math.ceil(
+        num_examples / (hp.per_device_train_batch_size * hp.gradient_accumulation_steps)
+    )
+    total_steps = steps_per_epoch * hp.num_train_epochs
+    warmup_steps = max(1, int(total_steps * hp.warmup_ratio)) if hp.warmup_ratio > 0 else 0
+
     # Training arguments
     training_args = TrainingArguments(
         output_dir=str(output_dir),
@@ -692,7 +701,7 @@ def train(
         gradient_accumulation_steps=hp.gradient_accumulation_steps,
         learning_rate=hp.learning_rate,
         lr_scheduler_type=hp.lr_scheduler_type,
-        warmup_ratio=hp.warmup_ratio,
+        warmup_steps=warmup_steps,
         weight_decay=hp.weight_decay,
         optim=hp.optim,
         fp16=hp.fp16,
