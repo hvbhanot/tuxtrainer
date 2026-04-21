@@ -40,12 +40,10 @@ dependencies = [
     "protobuf>=3.20.0",
     "scipy>=1.11.0",
     "requests>=2.28.0",
+    "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth",
 ]
 
 [project.optional-dependencies]
-unsloth = [
-    "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth",
-]
 vllm = [
     "vllm>=0.3.0",
 ]
