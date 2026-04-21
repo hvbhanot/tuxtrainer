@@ -538,9 +538,14 @@ def apply_lora_adapters(
 
     Returns the model with adapters attached.
     """
+    console.print(f"[cyan]  Resolving LoRA target modules for {model_id or 'unknown model'}...[/cyan]")
+    console.print(f"[dim]  Original target modules: {hyperparams.lora_target_modules}[/dim]")
+
     target_modules = resolve_target_modules_for_model(
         model, model_id, hyperparams.lora_target_modules,
     )
+
+    console.print(f"[cyan]  Final target modules: {target_modules}[/cyan]")
 
     if use_unsloth:
         try:
