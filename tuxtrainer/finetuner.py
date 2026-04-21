@@ -772,22 +772,65 @@ def merge_adapter_to_base(
 
     Returns the path to the merged model directory.
     """
-    from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
     import torch
 
     merged_dir = output_dir / "merged_model"
     merged_dir.mkdir(parents=True, exist_ok=True)
 
-    console.print("[cyan]Loading base model for merging...[/cyan]")
-
     token = _hf_token()
-    try:
-        # Use GPU if available for much faster merging, otherwise fall back to CPU
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
 
-        # Load base model in full precision for merging
+    # ------------------------------------------------------------------
+    # Unsloth path (preferred) – handles 4-bit quantized models correctly
+    # ------------------------------------------------------------------
+    try:
+        from unsloth import FastLanguageModel
+
+        console.print("[cyan]Loading base model with Unsloth for merging...[/cyan]")
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=model_id,
+            max_seq_length=max_seq_length,
+            load_in_4bit=True,  # Same quant as training – Unsloth handles dequant on save
+            dtype=None,
+            token=token,
+        )
+
+        console.print(f"[cyan]Loading adapter from {adapter_path}...[/cyan]")
+        model = PeftModel.from_pretrained(model, str(adapter_path))
+
+        console.print("[cyan]Saving merged model...[/cyan]")
+        if hasattr(model, "save_pretrained_merged"):
+            # Unsloth's merged save properly dequantizes 4-bit weights
+            model.save_pretrained_merged(
+                str(merged_dir),
+                tokenizer,
+                save_method="merged_16bit",
+            )
+        else:
+            model = model.merge_and_unload()
+            model.save_pretrained(str(merged_dir), safe_serialization=True)
+            tokenizer.save_pretrained(str(merged_dir))
+
+        console.print(f"[green]  Merged model saved[/green]")
+        return merged_dir
+
+    except ImportError:
+        pass  # Unsloth not installed – fall through to standard HF
+
+    # ------------------------------------------------------------------
+    # Standard HuggingFace fallback
+    # ------------------------------------------------------------------
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    console.print("[cyan]Loading base model for merging...[/cyan]")
+    try:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        dtype = (
+            torch.bfloat16
+            if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+            else torch.float16
+        )
+
         base_model = AutoModelForCausalLM.from_pretrained(
             model_id,
             torch_dtype=dtype,
@@ -797,20 +840,25 @@ def merge_adapter_to_base(
             token=token,
         )
 
-        # Load adapter
         console.print(f"[cyan]Loading adapter from {adapter_path}...[/cyan]")
         model = PeftModel.from_pretrained(base_model, str(adapter_path))
 
-        # Merge
         console.print("[cyan]Merging adapter weights...[/cyan]")
         console.print("[dim]  (This may take a few minutes for 7B+ models)[/dim]")
         model = model.merge_and_unload()
 
-        # Save
+        # Strip quantization metadata that can break transformers 5.x save
+        if hasattr(model, "config"):
+            for attr in ("quantization_config", "_pre_quantization_dtype"):
+                if hasattr(model.config, attr):
+                    delattr(model.config, attr)
+
         console.print(f"[cyan]Saving merged model to {merged_dir}...[/cyan]")
         model.save_pretrained(str(merged_dir), safe_serialization=True)
 
-        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, token=token)
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_id, trust_remote_code=True, token=token
+        )
         tokenizer.save_pretrained(str(merged_dir))
     except Exception as e:
         _handle_model_load_error(e, model_id)
