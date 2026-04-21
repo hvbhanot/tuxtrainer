@@ -218,14 +218,21 @@ def setup_colab(
     # ── Done ───────────────────────────────────────────────────────────
     console.print("\n[bold green]Colab setup complete![/bold green]")
 
+    # Runtime restart warning
+    console.print(
+        "\n[yellow]If you just re-installed tuxtrainer, you MUST restart the runtime:[/yellow]\n"
+        "  [dim]Runtime → Restart session (Ctrl+M .)[/dim]\n"
+        "[yellow]Otherwise the old cached code will be used.[/yellow]"
+    )
+
     # Check if the Ollama API key is set (for master model)
     if os.environ.get("OLLAMA_API_KEY"):
         console.print("[green]OLLAMA_API_KEY is set — master model will use Ollama Cloud.[/green]")
     else:
         console.print(
-            "[yellow]OLLAMA_API_KEY not set. Set it for the master model to use Ollama Cloud:[/yellow]\n"
-            "  [dim]import os; os.environ['OLLAMA_API_KEY'] = 'your-key-here'[/dim]\n"
-            "  [dim]Or use --master-backend openai with OPENAI_API_KEY[/dim]"
+            "[yellow]OLLAMA_API_KEY not set. The master model will fall back to local Ollama:[/yellow]\n"
+            "  [dim]config = FinetuneConfig(..., master_backend='ollama')[/dim]\n"
+            "  [dim]Or set OLLAMA_API_KEY for Ollama Cloud[/dim]"
         )
 
     # Check if the Ollama namespace is set (for registry push)

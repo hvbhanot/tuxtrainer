@@ -256,13 +256,15 @@ class GGUFConverter:
         import torch
         import numpy as np
 
+        token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
         model = AutoModelForCausalLM.from_pretrained(
             str(model_dir),
             torch_dtype=torch.float16,
             device_map="cpu",
             trust_remote_code=True,
+            token=token,
         )
-        tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True, token=token)
 
         # This is a simplified path — in practice you'd iterate over all tensors
         # For now, delegate to the CLI approach if available

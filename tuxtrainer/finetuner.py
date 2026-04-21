@@ -32,6 +32,32 @@ logger = logging.getLogger(__name__)
 # Model loading
 # ---------------------------------------------------------------------------
 
+def _hf_token() -> Optional[str]:
+    """Return the HuggingFace token from the environment, if any."""
+    return os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+
+
+def _handle_gated_repo_error(e: Exception, model_id: str) -> None:
+    """Raise a user-friendly error when a gated model cannot be accessed."""
+    from huggingface_hub.utils import GatedRepoError
+
+    error_str = str(e).lower()
+    if isinstance(e, GatedRepoError) or "gated" in error_str or "401" in error_str:
+        raise RuntimeError(
+            f"\n[bold red]Model '{model_id}' is gated on HuggingFace.[/bold red]\n"
+            "You need to:\n"
+            "  1. Accept the model license at "
+            f"[blue]https://huggingface.co/{model_id}[/blue]\n"
+            "  2. Create a HuggingFace token at [blue]https://huggingface.co/settings/tokens[/blue]\n"
+            "  3. Set it as a secret in Colab or export it:\n"
+            "     [dim]import os; os.environ['HF_TOKEN'] = 'your_token_here'[/dim]\n"
+            "  4. Restart the runtime and try again.\n"
+            "\nAlternatively, use a non-gated model such as:\n"
+            "  [dim]unsloth/Llama-3.2-1B-Instruct[/dim]\n"
+            "  [dim]HuggingFaceTB/SmolLM2-1.7B-Instruct[/dim]"
+        ) from e
+
+
 def load_model_and_tokenizer(
     model_id: str,
     max_seq_length: int = 2048,
@@ -52,39 +78,48 @@ def load_model_and_tokenizer(
 
     console.print(f"[bold blue]Loading model [cyan]{model_id}[/cyan]...[/bold blue]")
 
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_id,
-        trust_remote_code=True,
-        use_fast=True,
-    )
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
+    token = _hf_token()
 
-    # Load model
-    if method == FinetuneMethod.QLORA:
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-        )
-        model = AutoModelForCausalLM.from_pretrained(
+    try:
+        # Load tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(
             model_id,
-            quantization_config=bnb_config,
-            device_map="auto",
             trust_remote_code=True,
-            max_seq_length=max_seq_length,
+            use_fast=True,
+            token=token,
         )
-    else:
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            device_map="auto",
-            trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
-            max_seq_length=max_seq_length,
-        )
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "right"
+
+        # Load model
+        if method == FinetuneMethod.QLORA:
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+            )
+            model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                quantization_config=bnb_config,
+                device_map="auto",
+                trust_remote_code=True,
+                max_seq_length=max_seq_length,
+                token=token,
+            )
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                device_map="auto",
+                trust_remote_code=True,
+                torch_dtype=torch.bfloat16,
+                max_seq_length=max_seq_length,
+                token=token,
+            )
+    except Exception as e:
+        _handle_gated_repo_error(e, model_id)
+        raise
 
     # Enable gradient checkpointing on the base model (before LoRA)
     model.enable_input_require_grads()
@@ -111,12 +146,18 @@ def _load_with_unsloth(
     console.print(f"[bold blue]Loading model with [magenta]Unsloth[/magenta]: [cyan]{model_id}[/cyan]...[/bold blue]")
 
     load_in_4bit = method == FinetuneMethod.QLORA
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=model_id,
-        max_seq_length=max_seq_length,
-        load_in_4bit=load_in_4bit,
-        dtype=None,  # Auto-detect
-    )
+    token = _hf_token()
+    try:
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=model_id,
+            max_seq_length=max_seq_length,
+            load_in_4bit=load_in_4bit,
+            dtype=None,  # Auto-detect
+            token=token,
+        )
+    except Exception as e:
+        _handle_gated_repo_error(e, model_id)
+        raise
 
     console.print("[green]Model loaded with Unsloth.[/green]")
     return model, tokenizer
@@ -348,28 +389,34 @@ def merge_adapter_to_base(
 
     console.print(f"[blue]Loading base model for merging...[/blue]")
 
-    # Load base model in full precision for merging
-    base_model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        torch_dtype=torch.bfloat16,
-        device_map="cpu",  # Merge on CPU to avoid OOM
-        trust_remote_code=True,
-    )
+    token = _hf_token()
+    try:
+        # Load base model in full precision for merging
+        base_model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            torch_dtype=torch.bfloat16,
+            device_map="cpu",  # Merge on CPU to avoid OOM
+            trust_remote_code=True,
+            token=token,
+        )
 
-    # Load adapter
-    console.print(f"[blue]Loading adapter from {adapter_path}...[/blue]")
-    model = PeftModel.from_pretrained(base_model, str(adapter_path))
+        # Load adapter
+        console.print(f"[blue]Loading adapter from {adapter_path}...[/blue]")
+        model = PeftModel.from_pretrained(base_model, str(adapter_path))
 
-    # Merge
-    console.print("[blue]Merging adapter weights into base model...[/blue]")
-    model = model.merge_and_unload()
+        # Merge
+        console.print("[blue]Merging adapter weights into base model...[/blue]")
+        model = model.merge_and_unload()
 
-    # Save
-    console.print(f"[blue]Saving merged model to {merged_dir}...[/blue]")
-    model.save_pretrained(str(merged_dir), safe_serialization=True)
+        # Save
+        console.print(f"[blue]Saving merged model to {merged_dir}...[/blue]")
+        model.save_pretrained(str(merged_dir), safe_serialization=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-    tokenizer.save_pretrained(str(merged_dir))
+        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, token=token)
+        tokenizer.save_pretrained(str(merged_dir))
+    except Exception as e:
+        _handle_gated_repo_error(e, model_id)
+        raise
 
     console.print(f"[green]Merged model saved to {merged_dir}[/green]")
     return merged_dir

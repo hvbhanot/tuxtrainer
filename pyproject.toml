@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tuxtrainer"
-version = "1.0.0"
+version = "1.0.1"
 description = "Fine-tune HuggingFace models with PDFs and push to Ollama registry — use on any device"
 readme = "README.md"
 license = {text = "MIT"}
