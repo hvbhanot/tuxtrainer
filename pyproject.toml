@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "tuxtrainer"
+version = "1.0.0"
+description = "Fine-tune HuggingFace models with PDFs and push to Ollama registry — use on any device"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "tuxtrainer contributors"}
+]
+keywords = ["ollama", "huggingface", "fine-tuning", "lora", "pdf", "llm", "tuxtrainer"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.1.0",
+    "transformers>=4.36.0",
+    "peft>=0.7.0",
+    "trl>=0.7.0",
+    "accelerate>=0.25.0",
+    "bitsandbytes>=0.41.0",
+    "datasets>=2.16.0",
+    "pymupdf>=1.23.0",
+    "rich>=13.0.0",
+    "click>=8.1.0",
+    "pydantic>=2.5.0",
+    "huggingface-hub>=0.20.0",
+    "sentencepiece>=0.1.99",
+    "protobuf>=3.20.0",
+    "scipy>=1.11.0",
+]
+
+[project.optional-dependencies]
+unsloth = [
+    "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth",
+]
+vllm = [
+    "vllm>=0.3.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+]
+
+[project.scripts]
+tuxtrainer = "tuxtrainer.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["tuxtrainer*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
