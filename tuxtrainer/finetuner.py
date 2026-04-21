@@ -765,13 +765,26 @@ def _dequantize_bnb_model(model):
     transformers 5.x does not implement ``reverse_op`` for BNB quantizers,
     so ``save_pretrained`` crashes on merged 4-bit models.  Dequantizing
     manually bypasses the quantizer entirely.
+
+    Also handles wrapped architectures (e.g. Gemma4ClippableLinear) where
+    the ``Linear4bit`` is an inner submodule rather than a top-level attribute.
     """
     import bitsandbytes as bnb
     import torch
 
     for name, module in list(model.named_modules()):
+        # Direct Linear4bit — replace in-place
         if not isinstance(module, bnb.nn.Linear4bit):
             continue
+
+        # If the parent module is a wrapper (like Gemma4ClippableLinear),
+        # the replacement must happen on the wrapper's attribute, not by
+        # replacing the wrapper itself.  Otherwise the wrapper's forward()
+        # still references the old quantised layer.
+        parent = model
+        *parent_parts, child_name = name.split(".")
+        for part in parent_parts:
+            parent = getattr(parent, part)
 
         # Dequantize weight to fp16
         weight_fp = bnb.functional.dequantize_4bit(
@@ -792,20 +805,33 @@ def _dequantize_bnb_model(model):
         if module.bias is not None:
             new_module.bias.data = module.bias.data.to(torch.float16)
 
-        # Replace in parent
-        *parent_parts, child_name = name.split(".")
-        parent = model
-        for part in parent_parts:
-            parent = getattr(parent, part)
         setattr(parent, child_name, new_module)
 
-    # Strip quantizer metadata so HF doesn't try to invoke it on save
+    # Remove all quantization-related attributes from the model to prevent
+    # transformers 5.x from trying to call reverse_op during save_pretrained.
     if hasattr(model, "hf_quantizer"):
         model.hf_quantizer = None
     if hasattr(model, "config"):
-        for attr in ("quantization_config", "_pre_quantization_dtype", "quantization_method"):
-            if hasattr(model.config, attr):
-                delattr(model.config, attr)
+        config = model.config
+        for attr in ("quantization_config", "_pre_quantization_dtype",
+                      "quantization_method", "_quantization_config"):
+            if hasattr(config, attr):
+                try:
+                    delattr(config, attr)
+                except (AttributeError, TypeError):
+                    pass
+        # Also clear the config dict entry if present
+        if hasattr(config, "__dict__"):
+            for attr in ("quantization_config", "_pre_quantization_dtype",
+                          "quantization_method", "_quantization_config"):
+                config.__dict__.pop(attr, None)
+
+    # Remove device_map and dispatching metadata which can interfere
+    if hasattr(model, "hf_device_map"):
+        try:
+            delattr(model, "hf_device_map")
+        except (AttributeError, TypeError):
+            pass
 
     return model
 
@@ -856,7 +882,12 @@ def merge_adapter_to_base(
         model = _dequantize_bnb_model(model)
 
         console.print(f"[cyan]Saving merged model to {merged_dir}...[/cyan]")
-        model.save_pretrained(str(merged_dir), safe_serialization=True)
+        try:
+            model.save_pretrained(str(merged_dir), safe_serialization=True)
+        except NotImplementedError as exc:
+            console.print(f"[yellow]  save_pretrained failed ({exc}), retrying after cleanup...[/yellow]")
+            model = _dequantize_bnb_model(model)
+            model.save_pretrained(str(merged_dir), safe_serialization=True)
         tokenizer.save_pretrained(str(merged_dir))
 
         console.print(f"[green]  Merged model saved[/green]")
@@ -899,7 +930,12 @@ def merge_adapter_to_base(
         model = _dequantize_bnb_model(model)
 
         console.print(f"[cyan]Saving merged model to {merged_dir}...[/cyan]")
-        model.save_pretrained(str(merged_dir), safe_serialization=True)
+        try:
+            model.save_pretrained(str(merged_dir), safe_serialization=True)
+        except NotImplementedError as exc:
+            console.print(f"[yellow]  save_pretrained failed ({exc}), retrying after cleanup...[/yellow]")
+            model = _dequantize_bnb_model(model)
+            model.save_pretrained(str(merged_dir), safe_serialization=True)
 
         tokenizer = AutoTokenizer.from_pretrained(
             model_id, trust_remote_code=True, token=token
