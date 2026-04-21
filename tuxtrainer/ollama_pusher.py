@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -155,6 +156,32 @@ def wait_for_ollama(host: str = "http://localhost:11434", timeout: int = 60) -> 
     return False
 
 
+def _get_ollama_path() -> str:
+    """Return the absolute path to the ollama binary.
+
+    Checks ``shutil.which()`` first, then falls back to common
+    installation locations used by the official install script.
+    """
+    path = shutil.which("ollama")
+    if path:
+        return path
+
+    candidates = [
+        "/usr/local/bin/ollama",
+        "/usr/bin/ollama",
+        os.path.expanduser("~/.ollama/bin/ollama"),
+        "/opt/ollama/bin/ollama",
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    raise FileNotFoundError(
+        "ollama binary not found in PATH or common locations. "
+        "Try reinstalling: !apt-get install -y zstd && curl -fsSL https://ollama.com/install.sh | sh"
+    )
+
+
 def install_ollama_colab() -> bool:
     """Install and start Ollama on a Google Colab VM.
 
@@ -199,8 +226,17 @@ def install_ollama_colab() -> bool:
 
     # Start the server in the background
     console.print("[blue]Starting Ollama server...[/blue]")
+    try:
+        ollama_path = _get_ollama_path()
+    except FileNotFoundError:
+        console.print(
+            "[red]Ollama install script ran but binary not found. "
+            "Try restarting the runtime and running again.[/red]"
+        )
+        return False
+
     subprocess.Popen(
-        ["ollama", "serve"],
+        [ollama_path, "serve"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         env={**os.environ, "OLLAMA_HOST": "0.0.0.0"},

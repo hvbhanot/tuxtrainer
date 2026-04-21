@@ -68,6 +68,32 @@ def _is_ollama_installed() -> bool:
     return shutil.which("ollama") is not None
 
 
+def _get_ollama_path() -> str:
+    """Return the absolute path to the ollama binary.
+
+    Checks ``shutil.which()`` first, then falls back to common
+    installation locations used by the official install script.
+    """
+    path = shutil.which("ollama")
+    if path:
+        return path
+
+    candidates = [
+        "/usr/local/bin/ollama",
+        "/usr/bin/ollama",
+        os.path.expanduser("~/.ollama/bin/ollama"),
+        "/opt/ollama/bin/ollama",
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    raise FileNotFoundError(
+        "ollama binary not found in PATH or common locations. "
+        "Try reinstalling: !apt-get install -y zstd && curl -fsSL https://ollama.com/install.sh | sh"
+    )
+
+
 def setup_colab(
     install_ollama: bool = True,
     install_llama_cpp: bool = True,
@@ -143,8 +169,9 @@ def setup_colab(
 
         # Start the server in the background
         console.print("[blue]Starting Ollama server...[/blue]")
+        ollama_path = _get_ollama_path()
         subprocess.Popen(
-            ["ollama", "serve"],
+            [ollama_path, "serve"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env={**os.environ, "OLLAMA_HOST": "0.0.0.0"},
@@ -165,7 +192,7 @@ def setup_colab(
         if pull_master_model:
             console.print(f"[blue]Pulling model '{pull_master_model}'...[/blue]")
             subprocess.run(
-                ["ollama", "pull", pull_master_model],
+                [ollama_path, "pull", pull_master_model],
                 capture_output=True,
                 text=True,
                 timeout=600,
