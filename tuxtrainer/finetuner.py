@@ -759,6 +759,57 @@ def train(
 # Merge adapters into base model
 # ---------------------------------------------------------------------------
 
+def _dequantize_bnb_model(model):
+    """Replace all bitsandbytes 4-bit layers with standard fp16 Linear layers.
+
+    transformers 5.x does not implement ``reverse_op`` for BNB quantizers,
+    so ``save_pretrained`` crashes on merged 4-bit models.  Dequantizing
+    manually bypasses the quantizer entirely.
+    """
+    import bitsandbytes as bnb
+    import torch
+
+    for name, module in list(model.named_modules()):
+        if not isinstance(module, bnb.nn.Linear4bit):
+            continue
+
+        # Dequantize weight to fp16
+        weight_fp = bnb.functional.dequantize_4bit(
+            module.weight.data,
+            module.weight.quant_state,
+            quant_type=getattr(module.weight, "quant_type", "nf4"),
+        ).to(torch.float16)
+
+        # Build standard Linear replacement
+        new_module = torch.nn.Linear(
+            module.in_features,
+            module.out_features,
+            bias=module.bias is not None,
+            dtype=torch.float16,
+            device=module.weight.device,
+        )
+        new_module.weight.data = weight_fp
+        if module.bias is not None:
+            new_module.bias.data = module.bias.data.to(torch.float16)
+
+        # Replace in parent
+        *parent_parts, child_name = name.split(".")
+        parent = model
+        for part in parent_parts:
+            parent = getattr(parent, part)
+        setattr(parent, child_name, new_module)
+
+    # Strip quantizer metadata so HF doesn't try to invoke it on save
+    if hasattr(model, "hf_quantizer"):
+        model.hf_quantizer = None
+    if hasattr(model, "config"):
+        for attr in ("quantization_config", "_pre_quantization_dtype", "quantization_method"):
+            if hasattr(model.config, attr):
+                delattr(model.config, attr)
+
+    return model
+
+
 def merge_adapter_to_base(
     adapter_path: Path,
     model_id: str,
@@ -781,7 +832,7 @@ def merge_adapter_to_base(
     token = _hf_token()
 
     # ------------------------------------------------------------------
-    # Unsloth path (preferred) – handles 4-bit quantized models correctly
+    # Unsloth path (preferred)
     # ------------------------------------------------------------------
     try:
         from unsloth import FastLanguageModel
@@ -790,7 +841,7 @@ def merge_adapter_to_base(
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=model_id,
             max_seq_length=max_seq_length,
-            load_in_4bit=True,  # Same quant as training – Unsloth handles dequant on save
+            load_in_4bit=True,
             dtype=None,
             token=token,
         )
@@ -798,18 +849,15 @@ def merge_adapter_to_base(
         console.print(f"[cyan]Loading adapter from {adapter_path}...[/cyan]")
         model = PeftModel.from_pretrained(model, str(adapter_path))
 
-        console.print("[cyan]Saving merged model...[/cyan]")
-        if hasattr(model, "save_pretrained_merged"):
-            # Unsloth's merged save properly dequantizes 4-bit weights
-            model.save_pretrained_merged(
-                str(merged_dir),
-                tokenizer,
-                save_method="merged_16bit",
-            )
-        else:
-            model = model.merge_and_unload()
-            model.save_pretrained(str(merged_dir), safe_serialization=True)
-            tokenizer.save_pretrained(str(merged_dir))
+        console.print("[cyan]Merging adapter weights...[/cyan]")
+        model = model.merge_and_unload()
+
+        console.print("[cyan]Dequantizing 4-bit layers for save...[/cyan]")
+        model = _dequantize_bnb_model(model)
+
+        console.print(f"[cyan]Saving merged model to {merged_dir}...[/cyan]")
+        model.save_pretrained(str(merged_dir), safe_serialization=True)
+        tokenizer.save_pretrained(str(merged_dir))
 
         console.print(f"[green]  Merged model saved[/green]")
         return merged_dir
@@ -847,11 +895,8 @@ def merge_adapter_to_base(
         console.print("[dim]  (This may take a few minutes for 7B+ models)[/dim]")
         model = model.merge_and_unload()
 
-        # Strip quantization metadata that can break transformers 5.x save
-        if hasattr(model, "config"):
-            for attr in ("quantization_config", "_pre_quantization_dtype"):
-                if hasattr(model.config, attr):
-                    delattr(model.config, attr)
+        console.print("[cyan]Dequantizing 4-bit layers for save...[/cyan]")
+        model = _dequantize_bnb_model(model)
 
         console.print(f"[cyan]Saving merged model to {merged_dir}...[/cyan]")
         model.save_pretrained(str(merged_dir), safe_serialization=True)
