@@ -221,7 +221,7 @@ class FinetuneConfig(BaseModel):
         default=None,
         description=(
             "Custom base URL for the master model API. Defaults:\n"
-            "  ollama_cloud → https://api.ollama.ai\n"
+            "  ollama_cloud → https://ollama.com\n"
             "  openai → https://api.openai.com/v1\n"
             "  zai_sdk → https://api.z.ai/v1"
         ),

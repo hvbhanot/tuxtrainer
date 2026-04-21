@@ -162,12 +162,12 @@ def _call_ollama_cloud(
     ``Authorization`` header.  Set ``OLLAMA_API_KEY`` in your environment
     or pass it via the ``api_key`` parameter.
 
-    Default base URL: ``https://api.ollama.ai``
+    Default base URL: ``https://ollama.com``
     Override with ``OLLAMA_CLOUD_URL`` env var or ``base_url`` parameter.
     """
     resolved_key = api_key or os.environ.get("OLLAMA_API_KEY")
     resolved_url = base_url or os.environ.get(
-        "OLLAMA_CLOUD_URL", "https://api.ollama.ai"
+        "OLLAMA_CLOUD_URL", "https://ollama.com"
     )
 
     url = f"{resolved_url.rstrip('/')}/api/chat"
@@ -440,6 +440,25 @@ class HyperparamSelector:
                 )
             else:
                 raise ValueError(f"Unknown master backend: {backend}")
+        except requests.ConnectionError as e:
+            # If OLLAMA_CLOUD can't connect, try local Ollama as a fallback
+            if backend in (MasterModelBackend.OLLAMA_CLOUD, "ollama_cloud"):
+                console.print(
+                    f"[yellow]Ollama Cloud unreachable ({e}). "
+                    "Trying local Ollama instance...[/yellow]"
+                )
+                try:
+                    return _call_ollama(
+                        model=model,
+                        system_prompt=MASTER_SYSTEM_PROMPT,
+                        user_prompt=user_prompt,
+                        host=self.config.ollama_host,
+                    )
+                except Exception as local_err:
+                    console.print(f"[red]Local Ollama also failed: {local_err}[/red]")
+            console.print(f"[red]Master model call failed: {e}[/red]")
+            console.print("[yellow]Falling back to default hyperparameters.[/yellow]")
+            return ""
         except Exception as e:
             console.print(f"[red]Master model call failed: {e}[/red]")
             console.print("[yellow]Falling back to default hyperparameters.[/yellow]")
