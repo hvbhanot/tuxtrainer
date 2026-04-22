@@ -24,6 +24,8 @@ import gc
 import importlib.machinery
 import logging
 import os
+import shutil
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -37,6 +39,12 @@ from tuxtrainer.config import FinetuneConfig, FinetuneMethod, HyperParams
 
 console = Console()
 logger = logging.getLogger(__name__)
+
+_LLAMA_CPP_TARGETS = (
+    "llama-quantize",
+    "llama-cli",
+    "llama-server",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +84,179 @@ def _disable_problematic_wandb() -> None:
         integration_utils.is_wandb_available = lambda: False
     except Exception:
         pass
+
+
+def _llama_cpp_install_dir() -> Path:
+    """Return the llama.cpp directory that Unsloth should use."""
+    override = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".unsloth" / "llama.cpp"
+
+
+def _llama_cpp_quantizer_candidates(llama_cpp_dir: Path) -> list[Path]:
+    """Return candidate quantizer locations across llama.cpp layouts."""
+    search_dirs = [
+        llama_cpp_dir,
+        llama_cpp_dir / "build" / "bin",
+        llama_cpp_dir / "build" / "bin" / "Release",
+    ]
+    names = [
+        "llama-quantize",
+        "quantize",
+        "llama-quantize.exe",
+        "quantize.exe",
+    ]
+    return [search_dir / name for search_dir in search_dirs for name in names]
+
+
+def _llama_cpp_converter_candidates(llama_cpp_dir: Path) -> list[Path]:
+    """Return candidate converter script locations."""
+    return [
+        llama_cpp_dir / "convert_hf_to_gguf.py",
+        llama_cpp_dir / "convert-hf-to-gguf.py",
+    ]
+
+
+def _detect_llama_cpp_tools(llama_cpp_dir: Path) -> tuple[Path, Path]:
+    """Return the working quantizer binary and converter script."""
+    if not llama_cpp_dir.exists():
+        raise RuntimeError(f"llama.cpp folder '{llama_cpp_dir}' does not exist")
+
+    quantizer = next(
+        (
+            path
+            for path in _llama_cpp_quantizer_candidates(llama_cpp_dir)
+            if path.exists() and (os.name == "nt" or os.access(path, os.X_OK))
+        ),
+        None,
+    )
+    converter = next(
+        (path for path in _llama_cpp_converter_candidates(llama_cpp_dir) if path.exists()),
+        None,
+    )
+
+    if quantizer is None or converter is None:
+        raise RuntimeError(
+            f"Unsloth-compatible llama.cpp install is incomplete at {llama_cpp_dir}"
+        )
+
+    return quantizer, converter
+
+
+def _run_llama_cpp_command(command: list[str], cwd: Optional[Path] = None) -> None:
+    """Run a llama.cpp bootstrap command and stream output to the console."""
+    subprocess.run(
+        command,
+        cwd=str(cwd) if cwd is not None else None,
+        check=True,
+    )
+
+
+def _ensure_llama_cpp_checkout(llama_cpp_dir: Path) -> None:
+    """Clone llama.cpp if the requested checkout is missing or corrupted."""
+    if llama_cpp_dir.exists():
+        if (llama_cpp_dir / "CMakeLists.txt").exists():
+            return
+        if llama_cpp_dir == _llama_cpp_install_dir():
+            shutil.rmtree(llama_cpp_dir, ignore_errors=True)
+        else:
+            raise RuntimeError(
+                f"llama.cpp directory exists but is invalid: {llama_cpp_dir}"
+            )
+
+    llama_cpp_dir.parent.mkdir(parents=True, exist_ok=True)
+    console.print(f"[cyan]Bootstrapping llama.cpp in {llama_cpp_dir}...[/cyan]")
+    _run_llama_cpp_command(
+        [
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            "https://github.com/ggml-org/llama.cpp",
+            str(llama_cpp_dir),
+        ]
+    )
+
+
+def _build_llama_cpp(llama_cpp_dir: Path) -> None:
+    """Build llama.cpp with the modern CMake flow."""
+    build_dir = llama_cpp_dir / "build"
+    if build_dir.exists():
+        shutil.rmtree(build_dir, ignore_errors=True)
+
+    console.print("[cyan]Building llama.cpp for Unsloth GGUF export...[/cyan]")
+    _run_llama_cpp_command(
+        [
+            "cmake",
+            "-S",
+            str(llama_cpp_dir),
+            "-B",
+            str(build_dir),
+            "-DBUILD_SHARED_LIBS=OFF",
+            "-DGGML_CUDA=OFF",
+            "-Wno-dev",
+        ]
+    )
+    _run_llama_cpp_command(
+        [
+            "cmake",
+            "--build",
+            str(build_dir),
+            "--config",
+            "Release",
+            "-j",
+            str(os.cpu_count() or 1),
+            "--target",
+            *_LLAMA_CPP_TARGETS,
+        ]
+    )
+
+    bin_dir = build_dir / "bin"
+    if bin_dir.exists():
+        for binary in bin_dir.glob("llama-*"):
+            destination = llama_cpp_dir / binary.name
+            shutil.copy2(binary, destination)
+            if os.name != "nt":
+                destination.chmod(destination.stat().st_mode | 0o111)
+
+
+def _install_local_llama_cpp(llama_cpp_dir: Path) -> tuple[Path, Path]:
+    """Ensure a working llama.cpp install exists for Unsloth."""
+    try:
+        return _detect_llama_cpp_tools(llama_cpp_dir)
+    except RuntimeError:
+        pass
+
+    _ensure_llama_cpp_checkout(llama_cpp_dir)
+    _build_llama_cpp(llama_cpp_dir)
+    return _detect_llama_cpp_tools(llama_cpp_dir)
+
+
+def _patch_unsloth_llama_cpp_helpers() -> None:
+    """Patch older Unsloth builds to use a modern CMake llama.cpp bootstrap."""
+    _disable_problematic_wandb()
+    import unsloth.save as unsloth_save
+
+    install_dir = _llama_cpp_install_dir()
+    os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(install_dir)
+
+    def _check_llama_cpp(llama_cpp_folder=None):
+        quantizer, converter = _detect_llama_cpp_tools(
+            Path(llama_cpp_folder or install_dir).expanduser()
+        )
+        return str(quantizer), str(converter)
+
+    def _install_llama_cpp(llama_cpp_folder=None, *args, **kwargs):
+        quantizer, converter = _install_local_llama_cpp(
+            Path(llama_cpp_folder or install_dir).expanduser()
+        )
+        return str(quantizer), str(converter)
+
+    unsloth_save.check_llama_cpp = _check_llama_cpp
+    unsloth_save.install_llama_cpp = _install_llama_cpp
+    if hasattr(unsloth_save, "LLAMA_CPP_DEFAULT_DIR"):
+        unsloth_save.LLAMA_CPP_DEFAULT_DIR = str(install_dir)
 
 
 def _hf_token() -> Optional[str]:
@@ -194,10 +375,14 @@ def _load_with_unsloth(
     method: FinetuneMethod = FinetuneMethod.QLORA,
 ):
     """Load model using Unsloth's FastLanguageModel for faster training."""
+    _disable_problematic_wandb()
     try:
         from unsloth import FastLanguageModel
-    except ImportError:
-        console.print("[yellow]  Unsloth not found — falling back to standard HF loading[/yellow]")
+    except Exception as exc:
+        console.print(
+            "[yellow]  Unsloth import failed — falling back to standard HF loading[/yellow]"
+        )
+        logger.warning("Unsloth import failed during model load: %s", exc)
         return load_model_and_tokenizer(model_id, max_seq_length, method, use_unsloth=False)
 
     console.print(f"[cyan]Loading model with Unsloth: {model_id}...[/cyan]")
@@ -518,6 +703,7 @@ def apply_lora_adapters(
     console.print(f"[cyan]  Final target modules: {target_modules}[/cyan]")
 
     if use_unsloth:
+        _disable_problematic_wandb()
         try:
             from unsloth import FastLanguageModel
             model = FastLanguageModel.get_peft_model(
@@ -532,8 +718,8 @@ def apply_lora_adapters(
             )
             console.print("[green]  LoRA adapters applied[/green]")
             return model
-        except ImportError:
-            pass
+        except Exception as exc:
+            logger.warning("Unsloth LoRA path failed; falling back to PEFT: %s", exc)
 
     from peft import LoraConfig, get_peft_model, TaskType
 
@@ -727,9 +913,10 @@ def _ensure_unsloth_model(model, tokenizer, model_id: str, adapter_path: Optiona
     if model is not None and hasattr(model, "save_pretrained_gguf"):
         return model, tokenizer
 
+    _disable_problematic_wandb()
     try:
         from unsloth import FastLanguageModel
-    except ImportError as exc:
+    except Exception as exc:
         raise RuntimeError(
             "Unsloth is required for GGUF export. Install it with:\n"
             "  pip install 'unsloth[colab-new] @ git+https://github.com/unslothai/unsloth'"
@@ -741,17 +928,14 @@ def _ensure_unsloth_model(model, tokenizer, model_id: str, adapter_path: Optiona
             "path was provided to reload from."
         )
 
-    console.print("[cyan]Reloading base model with Unsloth for GGUF export...[/cyan]")
+    console.print("[cyan]Reloading adapter with Unsloth for GGUF export...[/cyan]")
     reloaded_model, reloaded_tok = FastLanguageModel.from_pretrained(
-        model_name=model_id,
+        model_name=str(adapter_path),
         max_seq_length=max_seq_length,
         load_in_4bit=method == FinetuneMethod.QLORA,
         dtype=None,
         token=_hf_token(),
     )
-
-    from peft import PeftModel
-    reloaded_model = PeftModel.from_pretrained(reloaded_model, str(adapter_path))
 
     if not hasattr(reloaded_model, "save_pretrained_gguf"):
         raise RuntimeError(
@@ -811,6 +995,8 @@ def save_gguf_unsloth(
         method=config.method if isinstance(config.method, FinetuneMethod)
             else FinetuneMethod(config.method),
     )
+
+    _patch_unsloth_llama_cpp_helpers()
 
     console.print("[cyan]Calling Unsloth save_pretrained_gguf...[/cyan]")
     model.save_pretrained_gguf(

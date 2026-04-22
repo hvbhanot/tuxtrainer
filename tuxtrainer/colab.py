@@ -144,7 +144,7 @@ def setup_colab(
     # ── Step 0: Pin the Python stack to Unsloth-compatible versions ────
     console.print("[bold blue]Pinning the Python stack for Unsloth GGUF export...[/bold blue]")
     try:
-        _run(
+        result = _run(
             (
                 'pip install -q --upgrade '
                 '"transformers==4.55.4" '
@@ -169,9 +169,19 @@ def setup_colab(
             timeout=300,
             check=False,
         )
+        if result.returncode != 0:
+            tail = (result.stderr or result.stdout or "").strip().splitlines()[-20:]
+            raise RuntimeError(
+                "Dependency installation failed.\n" + "\n".join(tail)
+            )
         console.print("[green]Pinned Python dependencies installed.[/green]")
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        console.print("[yellow]Dependency pin step skipped.[/yellow]")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as exc:
+        console.print("[red]Dependency pin step failed.[/red]")
+        raise RuntimeError(
+            "setup_colab() could not install the pinned Python stack cleanly. "
+            "Restart the runtime and rerun after fixing the error below:\n"
+            f"{exc}"
+        ) from exc
 
     # ── Step 1: Install Ollama (optional) ──────────────────────────────
     if install_ollama:
