@@ -23,19 +23,20 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-# Version pins below are deliberate.  transformers 5.x introduced a
+# Version pins below are deliberate. transformers 5.x introduced a
 # ConversionOps system whose bitsandbytes dequantize op lacks a
 # ``reverse_op`` implementation, which breaks ``save_pretrained`` on merged
-# 4-bit models and also destabilises Unsloth's own save path.  Until the
-# upstream fix lands in a released transformers version we pin < 5.0 and
-# stay on the last known-good tokenizers/peft/trl set.  See
-# https://github.com/unslothai/unsloth/issues/4832 for context.
+# 4-bit models and also destabilises Unsloth's own save path. We also pin
+# ``transformers`` below 4.56 because 4.56+ raised its tokenizers floor to
+# >=0.22, which conflicts with the last Unsloth-compatible tokenizers line.
+# transformers 4.55.4 still depends on ``tokenizers>=0.21,<0.22``.
+# See https://github.com/unslothai/unsloth/issues/4832 for context.
 dependencies = [
     "torch>=2.1.0",
     "unsloth",
     "unsloth_zoo",
-    "transformers>=4.56,<5.0",
-    "tokenizers<0.22",
+    "transformers==4.55.4",
+    "tokenizers>=0.21,<0.22",
     "trl==0.22.2",
     "peft>=0.13,<0.17",
     "bitsandbytes>=0.44",

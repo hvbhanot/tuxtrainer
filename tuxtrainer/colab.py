@@ -8,7 +8,8 @@ the model to the Ollama registry** (so you can use it on any device),
 Ollama needs to be installed on Colab to create and push the model.
 
 This helper installs everything needed for the full pipeline:
-the Unsloth-compatible Python dependency set and Ollama for model serving.
+the Unsloth-compatible Python dependency set, PyMuPDF / dataset tooling,
+and Ollama for model serving.
 Unsloth handles the GGUF conversion toolchain itself during
 ``save_pretrained_gguf``.
 
@@ -109,8 +110,9 @@ def setup_colab(
     doesn't need a local Ollama instance.
 
     Also pins the Python dependency set to the Unsloth-compatible versions
-    used by tuxtrainer. Unsloth builds llama.cpp internally when needed for
-    GGUF export, so this helper does not install or run any manual
+    used by tuxtrainer and installs the rest of tuxtrainer's runtime
+    dependencies. Unsloth builds llama.cpp internally when needed for GGUF
+    export, so this helper does not install or run any manual
     ``llama.cpp`` conversion scripts.
 
     Args:
@@ -145,14 +147,24 @@ def setup_colab(
         _run(
             (
                 'pip install -q --upgrade '
-                '"transformers>=4.56,<5.0" '
-                '"tokenizers<0.22" '
+                '"transformers==4.55.4" '
+                '"tokenizers>=0.21,<0.22" '
                 '"trl==0.22.2" '
                 '"peft>=0.13,<0.17" '
                 '"accelerate>=0.34" '
                 '"bitsandbytes>=0.44" '
                 '"unsloth" '
-                '"unsloth_zoo"'
+                '"unsloth_zoo" '
+                '"datasets>=2.16.0" '
+                '"pymupdf>=1.23.0" '
+                '"rich>=13.0.0" '
+                '"click>=8.1.0" '
+                '"pydantic>=2.5.0" '
+                '"huggingface-hub>=0.20.0" '
+                '"sentencepiece>=0.1.99" '
+                '"protobuf>=3.20.0" '
+                '"scipy>=1.11.0" '
+                '"requests>=2.28.0"'
             ),
             timeout=300,
             check=False,
