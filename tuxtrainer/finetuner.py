@@ -20,8 +20,11 @@ conversion pipeline and sidesteps the broken code path entirely.
 
 from __future__ import annotations
 
+import contextlib
+import importlib
 import gc
 import importlib.machinery
+import io
 import logging
 import os
 import shutil
@@ -50,6 +53,12 @@ _LLAMA_CPP_TARGETS = (
     "llama-quantize",
     "llama-cli",
     "llama-server",
+)
+_UNSLOTH_OPTIONAL_IMPORT_NOISE = (
+    "Unsloth: Could not import trl.trainer.alignprop_trainer",
+    "Unsloth: Could not import trl.trainer.ddpo_trainer",
+    "Failed to import trl.models.modeling_sd_base",
+    "peft>=0.17.0 is required for a normal functioning of this module",
 )
 
 
@@ -89,6 +98,44 @@ def _disable_problematic_wandb() -> None:
         integrations.is_wandb_available = lambda: False
     if integration_utils is not None:
         integration_utils.is_wandb_available = lambda: False
+
+
+class _LineFilter(io.TextIOBase):
+    """Forward output while dropping known low-signal Unsloth import noise."""
+
+    def __init__(self, target, suppressed_patterns: tuple[str, ...]) -> None:
+        self._target = target
+        self._suppressed_patterns = suppressed_patterns
+        self._buffer = ""
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        self._buffer += text
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            self._forward(line + "\n")
+        return len(text)
+
+    def flush(self) -> None:
+        if self._buffer:
+            self._forward(self._buffer)
+            self._buffer = ""
+        self._target.flush()
+
+    def _forward(self, text: str) -> None:
+        if any(pattern in text for pattern in self._suppressed_patterns):
+            return
+        self._target.write(text)
+
+
+def _import_unsloth_module(module_name: str):
+    """Import an Unsloth module while suppressing optional dependency chatter."""
+    stdout_filter = _LineFilter(sys.stdout, _UNSLOTH_OPTIONAL_IMPORT_NOISE)
+    stderr_filter = _LineFilter(sys.stderr, _UNSLOTH_OPTIONAL_IMPORT_NOISE)
+    with contextlib.redirect_stdout(stdout_filter), contextlib.redirect_stderr(stderr_filter):
+        return importlib.import_module(module_name)
 
 
 def _sync_gradient_checkpointing(model, enabled: bool) -> None:
@@ -277,7 +324,7 @@ def _install_local_llama_cpp(llama_cpp_dir: Path) -> tuple[Path, Path]:
 def _patch_unsloth_llama_cpp_helpers() -> None:
     """Patch older Unsloth builds to use a modern CMake llama.cpp bootstrap."""
     _disable_problematic_wandb()
-    import unsloth.save as unsloth_save
+    unsloth_save = _import_unsloth_module("unsloth.save")
 
     install_dir = _llama_cpp_install_dir()
     os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(install_dir)
@@ -418,7 +465,7 @@ def _load_with_unsloth(
     """Load model using Unsloth's FastLanguageModel for faster training."""
     _disable_problematic_wandb()
     try:
-        from unsloth import FastLanguageModel
+        FastLanguageModel = _import_unsloth_module("unsloth").FastLanguageModel
     except Exception as exc:
         console.print(
             "[yellow]  Unsloth import failed — falling back to standard HF loading[/yellow]"
@@ -746,7 +793,7 @@ def apply_lora_adapters(
     if use_unsloth:
         _disable_problematic_wandb()
         try:
-            from unsloth import FastLanguageModel
+            FastLanguageModel = _import_unsloth_module("unsloth").FastLanguageModel
             use_gc = "unsloth" if hyperparams.gradient_checkpointing else False
             model = FastLanguageModel.get_peft_model(
                 model,
@@ -966,7 +1013,7 @@ def _ensure_unsloth_model(model, tokenizer, model_id: str, adapter_path: Optiona
 
     _disable_problematic_wandb()
     try:
-        from unsloth import FastLanguageModel
+        FastLanguageModel = _import_unsloth_module("unsloth").FastLanguageModel
     except Exception as exc:
         raise RuntimeError(
             "Unsloth is required for GGUF export. Install it with:\n"

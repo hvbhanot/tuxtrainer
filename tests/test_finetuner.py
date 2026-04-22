@@ -35,6 +35,31 @@ def test_disable_problematic_wandb_clears_deprecated_env(monkeypatch):
     assert "WANDB_DISABLED" not in finetuner.os.environ
 
 
+def test_import_unsloth_module_filters_optional_dependency_noise(monkeypatch, capsys):
+    """Only the known optional TRL/PEFT chatter should be suppressed."""
+    import tuxtrainer.finetuner as finetuner
+
+    fake_module = types.ModuleType("unsloth")
+
+    def fake_import(name):
+        print("Unsloth: Could not import trl.trainer.alignprop_trainer: noisy")
+        print("Failed to import trl.models.modeling_sd_base because of the following error")
+        print("peft>=0.17.0 is required for a normal functioning of this module")
+        print("normal output")
+        return fake_module
+
+    monkeypatch.setattr(finetuner.importlib, "import_module", fake_import)
+
+    module = finetuner._import_unsloth_module("unsloth")
+    captured = capsys.readouterr()
+
+    assert module is fake_module
+    assert "alignprop_trainer" not in captured.out
+    assert "modeling_sd_base" not in captured.out
+    assert "peft>=0.17.0" not in captured.out
+    assert "normal output" in captured.out
+
+
 def test_sync_gradient_checkpointing_adds_missing_func():
     """Enabled checkpointing should seed `_gradient_checkpointing_func` on layers."""
     import tuxtrainer.finetuner as finetuner
