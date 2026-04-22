@@ -138,40 +138,29 @@ def _import_unsloth_module(module_name: str):
         return importlib.import_module(module_name)
 
 
-def _sync_gradient_checkpointing(model, enabled: bool) -> None:
-    """Keep Unsloth and Transformers gradient-checkpointing state aligned.
+def _sync_gradient_checkpointing(model) -> None:
+    """Seed missing HF checkpoint helpers without changing Unsloth's setup.
 
-    Unsloth's ``for_training`` helper toggles ``module.gradient_checkpointing``
-    booleans directly, but recent Transformers Mistral layers also expect
-    ``_gradient_checkpointing_func`` to exist whenever the flag is enabled.
-    This helper normalises both sides before ``trainer.train()`` starts.
+    Recent Transformers decoder layers expect ``_gradient_checkpointing_func``
+    to exist whenever ``module.gradient_checkpointing`` is already enabled.
+    Unsloth prepares that state itself, so we only backfill the missing
+    callable instead of re-enabling / disabling checkpointing here.
     """
     try:
         from torch.utils.checkpoint import checkpoint
     except ImportError:
-        checkpoint = None
-
-    if enabled and hasattr(model, "gradient_checkpointing_enable"):
-        try:
-            model.gradient_checkpointing_enable()
-        except Exception:
-            logger.debug("gradient_checkpointing_enable() failed; using manual sync", exc_info=True)
-    elif not enabled and hasattr(model, "gradient_checkpointing_disable"):
-        try:
-            model.gradient_checkpointing_disable()
-        except Exception:
-            logger.debug("gradient_checkpointing_disable() failed; using manual sync", exc_info=True)
+        return
 
     for module in model.modules():
-        if hasattr(module, "gradient_checkpointing"):
-            module.gradient_checkpointing = enabled
-            if enabled and checkpoint is not None and not hasattr(module, "_gradient_checkpointing_func"):
-                module._gradient_checkpointing_func = checkpoint
+        if getattr(module, "gradient_checkpointing", False) and not hasattr(
+            module, "_gradient_checkpointing_func"
+        ):
+            module._gradient_checkpointing_func = checkpoint
 
-    if hasattr(model, "gradient_checkpointing"):
-        model.gradient_checkpointing = enabled
-        if enabled and checkpoint is not None and not hasattr(model, "_gradient_checkpointing_func"):
-            model._gradient_checkpointing_func = checkpoint
+    if getattr(model, "gradient_checkpointing", False) and not hasattr(
+        model, "_gradient_checkpointing_func"
+    ):
+        model._gradient_checkpointing_func = checkpoint
 
 
 def _llama_cpp_install_dir() -> Path:
@@ -805,7 +794,7 @@ def apply_lora_adapters(
                 use_gradient_checkpointing=use_gc,
                 random_state=42,
             )
-            _sync_gradient_checkpointing(model, hyperparams.gradient_checkpointing)
+            _sync_gradient_checkpointing(model)
             console.print("[green]  LoRA adapters applied[/green]")
             return model
         except Exception as exc:
@@ -823,7 +812,7 @@ def apply_lora_adapters(
     )
 
     model = get_peft_model(model, lora_config)
-    _sync_gradient_checkpointing(model, hyperparams.gradient_checkpointing)
+    _sync_gradient_checkpointing(model)
     model.print_trainable_parameters()
     console.print("[green]LoRA adapters applied.[/green]")
     return model
@@ -963,12 +952,12 @@ def train(
         train_dataset=tokenised_dataset,
     )
 
-    if hasattr(trainer.model, "for_training"):
+    if hp.gradient_checkpointing and hasattr(trainer.model, "enable_input_require_grads"):
         try:
-            trainer.model.for_training(use_gradient_checkpointing=hp.gradient_checkpointing)
+            trainer.model.enable_input_require_grads()
         except Exception:
-            logger.debug("Unsloth for_training() sync failed", exc_info=True)
-    _sync_gradient_checkpointing(trainer.model, hp.gradient_checkpointing)
+            logger.debug("enable_input_require_grads() sync failed", exc_info=True)
+    _sync_gradient_checkpointing(trainer.model)
 
     console.print(Panel(
         f"[bold]Model[/bold]: {config.model_id}\n"

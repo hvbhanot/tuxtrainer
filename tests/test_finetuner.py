@@ -65,10 +65,10 @@ def test_sync_gradient_checkpointing_adds_missing_func():
     import tuxtrainer.finetuner as finetuner
 
     class Layer:
-        gradient_checkpointing = False
+        gradient_checkpointing = True
 
     class Model:
-        gradient_checkpointing = False
+        gradient_checkpointing = True
 
         def __init__(self):
             self.layer = Layer()
@@ -77,10 +77,8 @@ def test_sync_gradient_checkpointing_adds_missing_func():
             return [self, self.layer]
 
     model = Model()
-    finetuner._sync_gradient_checkpointing(model, True)
+    finetuner._sync_gradient_checkpointing(model)
 
-    assert model.gradient_checkpointing is True
-    assert model.layer.gradient_checkpointing is True
     assert hasattr(model, "_gradient_checkpointing_func")
     assert hasattr(model.layer, "_gradient_checkpointing_func")
 
@@ -107,14 +105,14 @@ def test_unsloth_lora_respects_disabled_gradient_checkpointing(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "unsloth", fake_unsloth)
     monkeypatch.setattr(finetuner, "_disable_problematic_wandb", lambda: None)
-    monkeypatch.setattr(finetuner, "_sync_gradient_checkpointing", lambda model, enabled: captured.setdefault("sync", enabled))
+    monkeypatch.setattr(finetuner, "_sync_gradient_checkpointing", lambda model: captured.setdefault("sync", True))
     monkeypatch.setattr(finetuner, "resolve_target_modules_for_model", lambda model, model_id, requested: requested)
 
     hp = HyperParams(gradient_checkpointing=False)
     finetuner.apply_lora_adapters(FakeModel(), hp, use_unsloth=True, model_id="test/model")
 
     assert captured["use_gradient_checkpointing"] is False
-    assert captured["sync"] is False
+    assert captured["sync"] is True
 
 
 def test_ensure_unsloth_model_reloads_adapter_directory(monkeypatch, tmp_path):
