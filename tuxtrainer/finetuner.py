@@ -957,7 +957,14 @@ def train(
             trainer.model.enable_input_require_grads()
         except Exception:
             logger.debug("enable_input_require_grads() sync failed", exc_info=True)
+
     _sync_gradient_checkpointing(trainer.model)
+
+    if not hp.gradient_checkpointing:
+        try:
+            trainer.model.gradient_checkpointing_disable()
+        except Exception:
+            pass
 
     console.print(Panel(
         f"[bold]Model[/bold]: {config.model_id}\n"
