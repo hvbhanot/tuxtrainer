@@ -107,7 +107,7 @@ class FinetunePipeline:
             model_name = str(gguf_path)
         else:
             try:
-                model_name = self._stage("Ollama Push", self._push_to_ollama, gguf_path)
+                model_name = self._stage("Ollama Push", self._push_to_ollama)
             except RuntimeError:
                 console.print("[yellow]Ollama push skipped — server not available.[/yellow]")
                 model_name = str(gguf_path)
@@ -231,10 +231,10 @@ class FinetunePipeline:
 
         return gguf_path
 
-    def _push_to_ollama(self, gguf_path):
-        """Stage 5: Create the model in Ollama and optionally push to registry."""
+    def _push_to_ollama(self):
+        """Stage 5: Create the model in Ollama from ``config.gguf_output_dir``."""
         pusher = OllamaPusher(self.config)
-        model_name = pusher.push(gguf_path)
+        model_name = pusher.push(self.config.get_gguf_output_dir())
         return model_name
 
     # ── Helpers ────────────────────────────────────────────────────────

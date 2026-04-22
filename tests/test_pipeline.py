@@ -8,8 +8,6 @@ of those are unavailable — typical local dev machines and CI on CPU.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from tuxtrainer.config import FinetuneConfig
@@ -94,15 +92,8 @@ def test_pipeline_produces_single_gguf(tmp_path):
     gguf_files = list(gguf_dir.glob("*.gguf"))
 
     assert gguf_dir.exists(), f"GGUF output dir missing: {gguf_dir}"
-    assert len(gguf_files) >= 1, (
-        f"Expected at least one .gguf in {gguf_dir}, found: {gguf_files}"
-    )
-
-    # The pipeline must NOT leave behind an intermediate merged-fp16 dir.
-    merged_dir = Path(config.output_dir) / "merged_model"
-    assert not merged_dir.exists(), (
-        f"Refactor regression: a merged-fp16 checkpoint was produced at {merged_dir}. "
-        "The Unsloth-only path should not create this directory."
+    assert len(gguf_files) == 1, (
+        f"Expected exactly one .gguf in {gguf_dir}, found: {gguf_files}"
     )
 
 

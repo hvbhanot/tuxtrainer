@@ -597,8 +597,7 @@ def train(
     step can operate on the in-memory Unsloth-wrapped model without having
     to reload the base.
     """
-    from transformers import TrainingArguments
-    from trl import SFTTrainer
+    from trl import SFTConfig, SFTTrainer
 
     hp = config.hyperparams
     output_dir = Path(config.output_dir) / "checkpoints"
@@ -612,7 +611,11 @@ def train(
     total_steps = steps_per_epoch * hp.num_train_epochs
     warmup_steps = max(1, int(total_steps * hp.warmup_ratio)) if hp.warmup_ratio > 0 else 0
 
-    training_args = TrainingArguments(
+    sft_args = {}
+    if config.data_format == "completion":
+        sft_args["dataset_text_field"] = "text"
+
+    training_args = SFTConfig(
         output_dir=str(output_dir),
         num_train_epochs=hp.num_train_epochs,
         per_device_train_batch_size=hp.per_device_train_batch_size,
@@ -633,15 +636,15 @@ def train(
         max_grad_norm=1.0,
         dataloader_pin_memory=True,
         remove_unused_columns=False,
+        max_length=hp.max_seq_length,
+        **sft_args,
     )
 
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         args=training_args,
         train_dataset=tokenised_dataset,
-        max_seq_length=hp.max_seq_length,
-        dataset_text_field="text" if config.data_format == "completion" else None,
     )
 
     console.print(Panel(

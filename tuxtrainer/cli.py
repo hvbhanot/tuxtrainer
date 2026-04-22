@@ -27,7 +27,7 @@ from tuxtrainer.config import (
     FinetuneMethod,
     HyperParams,
     MasterModelBackend,
-    Quantisation,
+    Quantization,
     SUPPORTED_QUANTIZATIONS,
 )
 
@@ -141,10 +141,10 @@ def _hyperparam_options(f):
     return f
 
 
-# Quantisation values are shown lowercase (canonical) in help text.  The
+# Quantization values are shown lowercase (canonical) in help text. The
 # Click ``case_sensitive=False`` flag accepts legacy uppercase forms, and
 # the Pydantic field validator normalises them before they reach Unsloth.
-_QUANT_CLI_CHOICES = sorted(q.value for q in Quantisation)
+_QUANT_CLI_CHOICES = sorted(q.value for q in Quantization)
 
 
 def _export_options(f):
@@ -153,7 +153,7 @@ def _export_options(f):
         "--quant",
         type=click.Choice(_QUANT_CLI_CHOICES, case_sensitive=False),
         default="q4_k_m",
-        help=f"GGUF quantisation level. One of: {sorted(SUPPORTED_QUANTIZATIONS)}.",
+        help=f"GGUF quantization level. One of: {sorted(SUPPORTED_QUANTIZATIONS)}.",
     )(f)
     f = click.option(
         "--ollama-name",
@@ -186,8 +186,8 @@ def _export_options(f):
     )(f)
     f = click.option(
         "--use-unsloth/--no-unsloth",
-        default=False,
-        help="Use Unsloth for faster fine-tuning (GGUF export always uses Unsloth).",
+        default=True,
+        help="Use Unsloth for fine-tuning and GGUF export (default: True).",
     )(f)
     return f
 
@@ -221,14 +221,14 @@ def _build_config(**kwargs) -> FinetuneConfig:
         master_api_key=kwargs.get("master_api_key"),
         auto_hyperparams=kwargs.get("auto_hp", True),
         output_dir=Path(kwargs.get("output", "./finetune_output")),
-        quantisation=kwargs.get("quant", "q4_k_m"),
+        quantization=kwargs.get("quant", "q4_k_m"),
         skip_ollama=kwargs.get("skip_ollama", False),
         ollama_namespace=kwargs.get("ollama_namespace"),
         ollama_model_name=kwargs.get("ollama_name"),
         ollama_push=kwargs.get("ollama_push", True),
         ollama_host=kwargs.get("ollama_host", "http://localhost:11434"),
         seed=kwargs.get("seed", 42),
-        use_unsloth=kwargs.get("use_unsloth", False),
+        use_unsloth=kwargs.get("use_unsloth", True),
     )
 
     return config
@@ -371,7 +371,7 @@ def train(**kwargs):
     "--quant",
     type=click.Choice(_QUANT_CLI_CHOICES, case_sensitive=False),
     default="q4_k_m",
-    help=f"GGUF quantisation level. One of: {sorted(SUPPORTED_QUANTIZATIONS)}.",
+    help=f"GGUF quantization level. One of: {sorted(SUPPORTED_QUANTIZATIONS)}.",
 )
 @click.option(
     "--method",
@@ -395,7 +395,7 @@ def export(**kwargs):
         model_id=kwargs["model"],
         method=FinetuneMethod(kwargs.get("method", "qlora")),
         output_dir=output_dir,
-        quantisation=kwargs["quant"],
+        quantization=kwargs["quant"],
     )
 
     gguf_path = save_gguf_unsloth(

@@ -20,8 +20,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # Enums
 # ---------------------------------------------------------------------------
 
-class Quantisation(str, Enum):
-    """Quantisation levels accepted by Unsloth's ``save_pretrained_gguf``."""
+class Quantization(str, Enum):
+    """Quantization levels accepted by Unsloth's ``save_pretrained_gguf``."""
     Q4_K_M = "q4_k_m"
     Q5_K_M = "q5_k_m"
     Q6_K = "q6_k"
@@ -30,7 +30,10 @@ class Quantisation(str, Enum):
 
 
 # Kept in one place so the CLI, Unsloth, and validators all agree.
-SUPPORTED_QUANTIZATIONS: frozenset[str] = frozenset(q.value for q in Quantisation)
+SUPPORTED_QUANTIZATIONS: frozenset[str] = frozenset(q.value for q in Quantization)
+
+# Backward-compatible alias for one release cycle.
+Quantisation = Quantization
 
 
 class MasterModelBackend(str, Enum):
@@ -165,9 +168,10 @@ class HyperParams(BaseModel):
 # Top-level pipeline config
 # ---------------------------------------------------------------------------
 
-# Kwargs that used to point at the intermediate merged-fp16 checkpoint.
-# They are no longer produced; pass-through with a DeprecationWarning.
-_DEPRECATED_KWARGS: tuple[str, ...] = (
+# Legacy kwargs that used to point at the intermediate merged-fp16 checkpoint.
+# They now map to the GGUF output directory, since that is the only export
+# artefact the pipeline produces.
+_DEPRECATED_MERGED_DIR_KWARGS: tuple[str, ...] = (
     "merged_model_dir",
     "merged_output_dir",
     "merged_dir",
@@ -265,10 +269,10 @@ class FinetuneConfig(BaseModel):
             "merged checkpoint is saved."
         ),
     )
-    quantisation: Quantisation = Field(
-        default=Quantisation.Q4_K_M,
+    quantization: Quantization = Field(
+        default=Quantization.Q4_K_M,
         description=(
-            "Quantisation level for the GGUF export. Must be one of: "
+            "Quantization level for the GGUF export. Must be one of: "
             f"{sorted(SUPPORTED_QUANTIZATIONS)}. "
             "Passed directly to Unsloth's save_pretrained_gguf."
         ),
@@ -312,12 +316,13 @@ class FinetuneConfig(BaseModel):
     seed: int = Field(default=42)
     resume_from_checkpoint: Optional[Path] = Field(default=None)
     use_unsloth: bool = Field(
-        default=False,
+        default=True,
         description=(
-            "Use Unsloth's FastLanguageModel for training (2× faster). "
-            "Unsloth is also used unconditionally for the GGUF export stage "
-            "regardless of this flag, since it is the only save path that "
-            "avoids the transformers 5.x ConversionOps regression."
+            "Use Unsloth's FastLanguageModel for training (default: True). "
+            "This keeps the LoRA-on-4bit model in Unsloth's native format so "
+            "the pipeline can call save_pretrained_gguf directly after SFT. "
+            "Set to False only if you need to debug standard HF training and "
+            "accept a reload before GGUF export."
         ),
     )
 
@@ -328,28 +333,41 @@ class FinetuneConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _migrate_deprecated(cls, data: Any) -> Any:
-        """Drop old kwargs that used to reference a merged-fp16 directory.
+        """Migrate deprecated kwargs to the Unsloth-only GGUF config surface.
 
         The pipeline no longer produces a merged checkpoint — Unsloth's
         ``save_pretrained_gguf`` converts straight to GGUF from the
-        LoRA-on-4bit model in memory.  Warn loudly so callers update.
+        LoRA-on-4bit model in memory.
         """
         if isinstance(data, dict):
-            for key in _DEPRECATED_KWARGS:
+            if "quantisation" in data:
+                warnings.warn(
+                    "'quantisation' is deprecated; use 'quantization' instead.",
+                    DeprecationWarning,
+                    stacklevel=3,
+                )
+                if "quantization" not in data:
+                    data["quantization"] = data["quantisation"]
+                data.pop("quantisation", None)
+
+            for key in _DEPRECATED_MERGED_DIR_KWARGS:
                 if key in data:
+                    target = data[key]
                     warnings.warn(
-                        f"{key!r} is deprecated and ignored: the pipeline "
-                        "no longer produces an intermediate merged fp16 "
-                        "checkpoint. Remove it from your config.",
+                        f"{key!r} is deprecated; use 'gguf_output_dir' instead. "
+                        "The pipeline no longer produces an intermediate merged "
+                        "fp16 checkpoint.",
                         DeprecationWarning,
                         stacklevel=3,
                     )
+                    if "gguf_output_dir" not in data and target is not None:
+                        data["gguf_output_dir"] = target
                     data.pop(key, None)
         return data
 
-    @field_validator("quantisation", mode="before")
+    @field_validator("quantization", mode="before")
     @classmethod
-    def _normalise_quantisation(cls, v: Any) -> Any:
+    def _normalise_quantization(cls, v: Any) -> Any:
         """Accept both 'Q4_K_M' (legacy) and 'q4_k_m' (canonical) forms."""
         if isinstance(v, str):
             return v.lower()
@@ -376,8 +394,8 @@ class FinetuneConfig(BaseModel):
         return Path(self.output_dir) / "gguf"
 
     def get_quantization_method(self) -> str:
-        """Return the quantisation string accepted by Unsloth."""
-        q = self.quantisation
+        """Return the quantization string accepted by Unsloth."""
+        q = self.quantization
         if hasattr(q, "value"):
             return q.value.lower()
         return str(q).lower()

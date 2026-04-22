@@ -13,6 +13,7 @@ from tuxtrainer.config import (
     FinetuneMethod,
     HyperParams,
     Quantisation,
+    Quantization,
     SUPPORTED_QUANTIZATIONS,
 )
 
@@ -58,6 +59,7 @@ class TestFinetuneConfig:
         assert config.model_id == "unsloth/Llama-3.2-1B-Instruct"
         assert config.method == FinetuneMethod.QLORA
         assert config.auto_hyperparams is True
+        assert config.use_unsloth is True
 
     def test_ollama_model_name_default(self):
         config = FinetuneConfig(model_id="unsloth/Llama-3.2-1B-Instruct")
@@ -120,37 +122,45 @@ class TestGGUFOutputDir:
         assert config.get_gguf_output_dir() == tmp_path / "custom_gguf"
 
 
-class TestQuantisation:
-    """Quantisation values must match what Unsloth's save_pretrained_gguf accepts."""
+class TestQuantization:
+    """Quantization values must match what Unsloth's save_pretrained_gguf accepts."""
 
     def test_enum_values_are_unsloth_compatible(self):
         expected = {"q4_k_m", "q5_k_m", "q6_k", "q8_0", "f16"}
-        assert {q.value for q in Quantisation} == expected
+        assert {q.value for q in Quantization} == expected
         assert SUPPORTED_QUANTIZATIONS == frozenset(expected)
 
-    def test_legacy_uppercase_accepted(self):
-        """Old CLI/YAML configs with 'Q4_K_M' should still parse."""
-        config = FinetuneConfig(model_id="test/model", quantisation="Q4_K_M")
+    def test_canonical_quantization_field_accepts_legacy_uppercase_value(self):
+        """Old CLI/YAML values like 'Q4_K_M' should still parse."""
+        config = FinetuneConfig(model_id="test/model", quantization="Q4_K_M")
         assert config.get_quantization_method() == "q4_k_m"
 
-    def test_method_string_is_lowercase(self):
-        config = FinetuneConfig(model_id="test/model", quantisation=Quantisation.Q8_0)
+    def test_legacy_quantisation_kwarg_warns_and_maps(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            config = FinetuneConfig(model_id="test/model", quantisation="Q5_K_M")
+        assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+        assert config.get_quantization_method() == "q5_k_m"
+
+    def test_legacy_enum_alias_still_works(self):
+        config = FinetuneConfig(model_id="test/model", quantization=Quantisation.Q8_0)
         assert config.get_quantization_method() == "q8_0"
 
 
 class TestDeprecatedKwargs:
-    """Old merged-fp16 directory kwargs warn and are dropped."""
+    """Old kwargs warn and map onto the Unsloth-only config surface."""
 
     @pytest.mark.parametrize(
         "legacy_kwarg",
         ["merged_model_dir", "merged_output_dir", "merged_dir"],
     )
-    def test_legacy_merged_kwargs_warn(self, legacy_kwarg, tmp_path):
+    def test_legacy_merged_kwargs_warn_and_map_to_gguf_dir(self, legacy_kwarg, tmp_path):
+        target = tmp_path / "legacy_export_dir"
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             config = FinetuneConfig(
                 model_id="test/model",
-                **{legacy_kwarg: str(tmp_path / "merged")},
+                **{legacy_kwarg: str(target)},
             )
         assert any(issubclass(w.category, DeprecationWarning) for w in caught)
-        assert not hasattr(config, legacy_kwarg)
+        assert config.get_gguf_output_dir() == target

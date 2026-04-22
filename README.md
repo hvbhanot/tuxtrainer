@@ -6,7 +6,7 @@ Fine-tune small LLMs on your PDFs and push to **Ollama** — optimised for Googl
 PDFs → extract & chunk → master model picks hyperparams → Unsloth QLoRA → GGUF → Ollama registry
 ```
 
-The GGUF conversion is done by Unsloth's native `save_pretrained_gguf`, which merges the LoRA adapter, dequantizes the 4-bit base, runs llama.cpp, and quantizes — all in one call. The pipeline produces a **single `.gguf` file** in `finetune_output/gguf/`; no intermediate fp16 checkpoint is saved.
+The GGUF conversion is done by Unsloth's native `save_pretrained_gguf`, which merges the LoRA adapter, dequantizes the 4-bit base, runs llama.cpp internally, and quantizes — all in one call. The pipeline produces a **single `.gguf` file** in `finetune_output/gguf/`; no intermediate fp16 checkpoint is saved.
 
 Pull your model on any device:
 
@@ -34,6 +34,8 @@ from tuxtrainer.colab import setup_colab
 setup_colab(pull_master_model="llama3.1")
 ```
 
+`setup_colab()` installs and starts Ollama for the push step and keeps the Python dependency set on the Unsloth-compatible versions pinned by `tuxtrainer`. It does not manually run any `llama.cpp` conversion scripts; Unsloth handles that during GGUF export.
+
 ### 3. Configure & run
 
 ```python
@@ -49,12 +51,12 @@ config = FinetuneConfig(
     pdf_paths=[Path("my_document.pdf")],
     master_backend="ollama",   # uses local Ollama, no API key needed
     master_model="llama3.1",
-    use_unsloth=True,          # recommended: faster training and needed by GGUF export
+    use_unsloth=True,          # default; keeps the direct in-memory GGUF path
 )
 
 pipeline = FinetunePipeline(config)
 pipeline.run()
-# → finetune_output/gguf/<your-model>.gguf
+# → exactly one .gguf file in finetune_output/gguf/
 # → ollama pull your-ollama-username/<your-model>-finetuned
 ```
 
@@ -119,9 +121,9 @@ $ tuxtrainer prep --pdf-dir ./documents/ --output dataset.jsonl
 
 ---
 
-## Quantisation
+## Quantization
 
-Quantisation values are passed straight to Unsloth's `save_pretrained_gguf`.
+Quantization values are passed straight to Unsloth's `save_pretrained_gguf`.
 
 | Level | Size | Quality |
 |-------|------|---------|
@@ -131,7 +133,7 @@ Quantisation values are passed straight to Unsloth's `save_pretrained_gguf`.
 | `q8_0` | Large | Excellent |
 | `f16` | Largest | Perfect |
 
-Legacy uppercase values (`Q4_K_M`, ...) are still accepted — they are normalised to lowercase at config-parse time.
+Legacy uppercase values (`Q4_K_M`, ...) are still accepted — they are normalized to lowercase at config-parse time. The old `quantisation=` config kwarg is also accepted for one release cycle and maps to `quantization=` with a `DeprecationWarning`.
 
 ---
 

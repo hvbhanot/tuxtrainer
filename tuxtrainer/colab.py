@@ -8,7 +8,9 @@ the model to the Ollama registry** (so you can use it on any device),
 Ollama needs to be installed on Colab to create and push the model.
 
 This helper installs everything needed for the full pipeline:
-PyTorch, llama.cpp for GGUF conversion, and Ollama for model serving.
+the Unsloth-compatible Python dependency set and Ollama for model serving.
+Unsloth handles the GGUF conversion toolchain itself during
+``save_pretrained_gguf``.
 
 After pushing, you can pull the model on any device:
 ``ollama pull your-namespace/model-name``
@@ -19,8 +21,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import sys
 import time
+import warnings
 
 from rich.console import Console
 
@@ -95,7 +97,7 @@ def _get_ollama_path() -> str:
 
 def setup_colab(
     install_ollama: bool = True,
-    install_llama_cpp: bool = True,
+    install_llama_cpp: bool | None = None,
     pull_master_model: str | None = None,
     ollama_host: str = "http://localhost:11434",
 ) -> None:
@@ -106,14 +108,16 @@ def setup_colab(
     master model uses the Ollama Cloud API (set ``OLLAMA_API_KEY``) — it
     doesn't need a local Ollama instance.
 
-    Also installs Unsloth (default training engine) and llama.cpp for GGUF
-    conversion.
+    Also pins the Python dependency set to the Unsloth-compatible versions
+    used by tuxtrainer. Unsloth builds llama.cpp internally when needed for
+    GGUF export, so this helper does not install or run any manual
+    ``llama.cpp`` conversion scripts.
 
     Args:
         install_ollama: Install Ollama locally on the Colab VM.
             Default is True because the pipeline pushes to the registry.
-        install_llama_cpp: Install llama.cpp for GGUF conversion.
-            Recommended — needed to convert the fine-tuned model.
+        install_llama_cpp: Deprecated and ignored. Unsloth handles the GGUF
+            conversion toolchain itself.
         pull_master_model: If installing Ollama, also pull this model
             for local master model usage.  Not needed if using the
             cloud API (the default).
@@ -121,19 +125,41 @@ def setup_colab(
     """
     import requests
 
+    if install_llama_cpp is not None:
+        warnings.warn(
+            "'install_llama_cpp' is deprecated and ignored. "
+            "Unsloth handles the GGUF conversion toolchain internally.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     if not _is_colab():
         console.print(
             "[yellow]Warning: Not running on Colab. "
             "Some steps may not work as expected.[/yellow]"
         )
 
-    # ── Step 0: Upgrade transformers for newest model architectures ────
-    console.print("[bold blue]Upgrading transformers for latest model support...[/bold blue]")
+    # ── Step 0: Pin the Python stack to Unsloth-compatible versions ────
+    console.print("[bold blue]Pinning the Python stack for Unsloth GGUF export...[/bold blue]")
     try:
-        _run("pip install -q --upgrade transformers accelerate", timeout=120, check=False)
-        console.print("[green]Transformers upgraded.[/green]")
+        _run(
+            (
+                'pip install -q --upgrade '
+                '"transformers>=4.56,<5.0" '
+                '"tokenizers<0.22" '
+                '"trl==0.22.2" '
+                '"peft>=0.13,<0.17" '
+                '"accelerate>=0.34" '
+                '"bitsandbytes>=0.44" '
+                '"unsloth" '
+                '"unsloth_zoo"'
+            ),
+            timeout=300,
+            check=False,
+        )
+        console.print("[green]Pinned Python dependencies installed.[/green]")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        console.print("[yellow]Transformers upgrade skipped.[/yellow]")
+        console.print("[yellow]Dependency pin step skipped.[/yellow]")
 
     # ── Step 1: Install Ollama (optional) ──────────────────────────────
     if install_ollama:
@@ -201,41 +227,6 @@ def setup_colab(
                 timeout=600,
             )
             console.print(f"[green]Model '{pull_master_model}' pulled.[/green]")
-
-    # ── Step 2: Install Unsloth (default engine) ───────────────────────
-    console.print("[bold blue]Installing Unsloth for fast training...[/bold blue]")
-    try:
-        _run(
-            'pip install -q --no-deps "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth"',
-            timeout=300,
-            check=False,
-        )
-        console.print("[green]Unsloth installed.[/green]")
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        console.print(f"[yellow]Unsloth install failed: {e}[/yellow]")
-        console.print("[yellow]Falling back to standard HuggingFace training (slower).[/yellow]")
-
-    # ── Step 3: Install llama.cpp for GGUF conversion ──────────────────
-    if install_llama_cpp:
-        console.print("[bold blue]Installing llama.cpp for GGUF conversion...[/bold blue]")
-        try:
-            # Install cmake first (required by newer llama.cpp versions)
-            _run("apt-get update -qq && apt-get install -y -qq cmake build-essential", timeout=120)
-
-            # Remove existing clone to avoid git "already exists" errors on re-runs
-            _run(
-                'cd /content && '
-                'rm -rf llama.cpp && '
-                'git clone --depth 1 https://github.com/ggerganov/llama.cpp && '
-                'cd llama.cpp && '
-                'cmake -B build -DCMAKE_BUILD_TYPE=Release && '
-                'cmake --build build --config Release -j$(nproc)',
-                timeout=300,
-            )
-            os.environ["LLAMA_CPP_PATH"] = "/content/llama.cpp"
-            console.print("[green]llama.cpp installed at /content/llama.cpp[/green]")
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            console.print("[yellow]llama.cpp install failed — GGUF conversion may not work[/yellow]")
 
     # ── Done ───────────────────────────────────────────────────────────
     console.print("\n[bold green]Colab setup complete![/bold green]")

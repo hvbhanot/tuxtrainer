@@ -15,16 +15,16 @@ the ``ollama_namespace`` config option.
 
 from pathlib import Path
 
-from tuxtrainer.config import FinetuneConfig, FinetuneMethod, Quantisation
+from tuxtrainer.config import FinetuneConfig, FinetuneMethod, Quantization
 from tuxtrainer.pipeline import FinetunePipeline
 
 
 def main():
-    # ── Step 0 (Colab only): Install Ollama + llama.cpp ────────────────
+    # ── Step 0 (Colab only): Install Ollama and pin compatible deps ────
     # Run this once at the top of your notebook:
     #
     #   from tuxtrainer.colab import setup_colab
-    #   setup_colab()  # installs Ollama + llama.cpp (Ollama needed for push)
+    #   setup_colab()  # installs Ollama and keeps Unsloth-compatible versions
 
     # ── Set your API keys ──────────────────────────────────────────────
     # For the Ollama Web API master model (picks hyperparameters):
@@ -66,7 +66,7 @@ def main():
         ollama_namespace="your-username",  # Or set OLLAMA_NAMESPACE env var
 
         # ── Export settings ──────────────────────────────────────────
-        quantisation=Quantisation.Q4_K_M,
+        quantization=Quantization.Q4_K_M,
         output_dir=Path("./finetune_output"),
 
         # ── Skip Ollama entirely (just get the GGUF file) ──────────────
