@@ -21,8 +21,11 @@ conversion pipeline and sidesteps the broken code path entirely.
 from __future__ import annotations
 
 import gc
+import importlib.machinery
 import logging
 import os
+import sys
+import types
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +42,41 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Model loading
 # ---------------------------------------------------------------------------
+
+def _disable_problematic_wandb() -> None:
+    """Keep a broken preinstalled ``wandb`` from breaking ``trl`` imports.
+
+    Google Colab images sometimes ship with a ``wandb`` / ``protobuf``
+    combination that crashes on plain ``import wandb`` before training even
+    starts. tuxtrainer does not use W&B reporting, so we explicitly disable
+    it and, if the installed package is broken, shadow it with a tiny stub so
+    ``transformers.integrations.is_wandb_available()`` returns ``False``.
+    """
+    os.environ.setdefault("WANDB_DISABLED", "true")
+
+    try:
+        import wandb  # noqa: F401
+        return
+    except Exception as exc:
+        logger.warning("wandb import failed; disabling wandb integration: %s", exc)
+
+    for name in list(sys.modules):
+        if name == "wandb" or name.startswith("wandb."):
+            sys.modules.pop(name, None)
+
+    stub = types.ModuleType("wandb")
+    stub.__spec__ = importlib.machinery.ModuleSpec("wandb", loader=None)
+    sys.modules["wandb"] = stub
+
+    try:
+        import transformers.integrations as integrations
+        import transformers.integrations.integration_utils as integration_utils
+
+        integrations.is_wandb_available = lambda: False
+        integration_utils.is_wandb_available = lambda: False
+    except Exception:
+        pass
+
 
 def _hf_token() -> Optional[str]:
     """Return the HuggingFace token from the environment, if any."""
@@ -597,6 +635,7 @@ def train(
     step can operate on the in-memory Unsloth-wrapped model without having
     to reload the base.
     """
+    _disable_problematic_wandb()
     from trl import SFTConfig, SFTTrainer
 
     hp = config.hyperparams
