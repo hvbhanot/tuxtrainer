@@ -127,6 +127,12 @@ def setup_colab(
     """
     import requests
 
+    os.environ.setdefault("USE_TORCH", "1")
+    os.environ.setdefault("USE_TF", "0")
+    os.environ.setdefault("USE_FLAX", "0")
+    os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+    os.environ.setdefault("TRANSFORMERS_NO_FLAX", "1")
+
     if install_llama_cpp is not None:
         warnings.warn(
             "'install_llama_cpp' is deprecated and ignored. "
@@ -162,7 +168,7 @@ def setup_colab(
                 '"pydantic>=2.5.0" '
                 '"huggingface-hub>=0.20.0" '
                 '"sentencepiece>=0.1.99" '
-                '"protobuf>=3.20.0" '
+                '"protobuf>=3.20,<6" '
                 '"scipy>=1.11.0" '
                 '"requests>=2.28.0"'
             ),

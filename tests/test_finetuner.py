@@ -12,6 +12,17 @@ from pathlib import Path
 from tuxtrainer.config import FinetuneMethod
 
 
+def test_finetuner_defaults_to_torch_only_runtime():
+    """The training path should disable TF/Flax before Unsloth imports."""
+    import tuxtrainer.finetuner as finetuner
+
+    assert finetuner.os.environ["USE_TORCH"] == "1"
+    assert finetuner.os.environ["USE_TF"] == "0"
+    assert finetuner.os.environ["USE_FLAX"] == "0"
+    assert finetuner.os.environ["TRANSFORMERS_NO_TF"] == "1"
+    assert finetuner.os.environ["TRANSFORMERS_NO_FLAX"] == "1"
+
+
 def test_ensure_unsloth_model_reloads_adapter_directory(monkeypatch, tmp_path):
     """GGUF fallback reload should point Unsloth at the adapter directory."""
     import tuxtrainer.finetuner as finetuner

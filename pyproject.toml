@@ -29,6 +29,9 @@ classifiers = [
 # 4-bit models and also destabilises Unsloth's own save path. We also pin
 # ``transformers`` below 4.56 because 4.56+ raised its tokenizers floor to
 # >=0.22, which conflicts with the last Unsloth-compatible tokenizers line.
+# ``protobuf`` is kept below 6 because Colab images often include
+# TensorFlow builds that crash on protobuf 6.x with
+# ``MessageFactory.GetPrototype`` import errors.
 # transformers 4.55.4 still depends on ``tokenizers>=0.21,<0.22``.
 # See https://github.com/unslothai/unsloth/issues/4832 for context.
 dependencies = [
@@ -48,7 +51,7 @@ dependencies = [
     "pydantic>=2.5.0",
     "huggingface-hub>=0.20.0",
     "sentencepiece>=0.1.99",
-    "protobuf>=3.20.0",
+    "protobuf>=3.20,<6",
     "scipy>=1.11.0",
     "requests>=2.28.0",
 ]

@@ -31,6 +31,12 @@ import types
 from pathlib import Path
 from typing import Optional
 
+os.environ.setdefault("USE_TORCH", "1")
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_FLAX", "0")
+os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+os.environ.setdefault("TRANSFORMERS_NO_FLAX", "1")
+
 from datasets import Dataset
 from rich.console import Console
 from rich.panel import Panel
@@ -76,14 +82,13 @@ def _disable_problematic_wandb() -> None:
     stub.__spec__ = importlib.machinery.ModuleSpec("wandb", loader=None)
     sys.modules["wandb"] = stub
 
-    try:
-        import transformers.integrations as integrations
-        import transformers.integrations.integration_utils as integration_utils
+    integrations = sys.modules.get("transformers.integrations")
+    integration_utils = sys.modules.get("transformers.integrations.integration_utils")
 
+    if integrations is not None:
         integrations.is_wandb_available = lambda: False
+    if integration_utils is not None:
         integration_utils.is_wandb_available = lambda: False
-    except Exception:
-        pass
 
 
 def _llama_cpp_install_dir() -> Path:
