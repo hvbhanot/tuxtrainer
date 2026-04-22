@@ -9,7 +9,7 @@ import sys
 import types
 from pathlib import Path
 
-from tuxtrainer.config import FinetuneMethod
+from tuxtrainer.config import FinetuneMethod, HyperParams
 
 
 def test_finetuner_defaults_to_torch_only_runtime():
@@ -21,6 +21,75 @@ def test_finetuner_defaults_to_torch_only_runtime():
     assert finetuner.os.environ["USE_FLAX"] == "0"
     assert finetuner.os.environ["TRANSFORMERS_NO_TF"] == "1"
     assert finetuner.os.environ["TRANSFORMERS_NO_FLAX"] == "1"
+
+
+def test_disable_problematic_wandb_clears_deprecated_env(monkeypatch):
+    """The Colab wandb shim should not leave WANDB_DISABLED behind."""
+    import tuxtrainer.finetuner as finetuner
+
+    monkeypatch.setenv("WANDB_DISABLED", "true")
+    monkeypatch.setitem(sys.modules, "wandb", types.ModuleType("wandb"))
+
+    finetuner._disable_problematic_wandb()
+
+    assert "WANDB_DISABLED" not in finetuner.os.environ
+
+
+def test_sync_gradient_checkpointing_adds_missing_func():
+    """Enabled checkpointing should seed `_gradient_checkpointing_func` on layers."""
+    import tuxtrainer.finetuner as finetuner
+
+    class Layer:
+        gradient_checkpointing = False
+
+    class Model:
+        gradient_checkpointing = False
+
+        def __init__(self):
+            self.layer = Layer()
+
+        def modules(self):
+            return [self, self.layer]
+
+    model = Model()
+    finetuner._sync_gradient_checkpointing(model, True)
+
+    assert model.gradient_checkpointing is True
+    assert model.layer.gradient_checkpointing is True
+    assert hasattr(model, "_gradient_checkpointing_func")
+    assert hasattr(model.layer, "_gradient_checkpointing_func")
+
+
+def test_unsloth_lora_respects_disabled_gradient_checkpointing(monkeypatch):
+    """Unsloth LoRA path must not force checkpointing when HP disable it."""
+    import tuxtrainer.finetuner as finetuner
+
+    captured = {}
+
+    class FakeModel:
+        def modules(self):
+            return [self]
+
+    class FakeFastLanguageModel:
+        @staticmethod
+        def get_peft_model(model, **kwargs):
+            captured.update(kwargs)
+            return model
+
+    fake_unsloth = types.ModuleType("unsloth")
+    fake_unsloth.__path__ = []
+    fake_unsloth.FastLanguageModel = FakeFastLanguageModel
+
+    monkeypatch.setitem(sys.modules, "unsloth", fake_unsloth)
+    monkeypatch.setattr(finetuner, "_disable_problematic_wandb", lambda: None)
+    monkeypatch.setattr(finetuner, "_sync_gradient_checkpointing", lambda model, enabled: captured.setdefault("sync", enabled))
+    monkeypatch.setattr(finetuner, "resolve_target_modules_for_model", lambda model, model_id, requested: requested)
+
+    hp = HyperParams(gradient_checkpointing=False)
+    finetuner.apply_lora_adapters(FakeModel(), hp, use_unsloth=True, model_id="test/model")
+
+    assert captured["use_gradient_checkpointing"] is False
+    assert captured["sync"] is False
 
 
 def test_ensure_unsloth_model_reloads_adapter_directory(monkeypatch, tmp_path):

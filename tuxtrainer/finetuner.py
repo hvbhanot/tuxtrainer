@@ -66,7 +66,7 @@ def _disable_problematic_wandb() -> None:
     it and, if the installed package is broken, shadow it with a tiny stub so
     ``transformers.integrations.is_wandb_available()`` returns ``False``.
     """
-    os.environ.setdefault("WANDB_DISABLED", "true")
+    os.environ.pop("WANDB_DISABLED", None)
 
     try:
         import wandb  # noqa: F401
@@ -89,6 +89,42 @@ def _disable_problematic_wandb() -> None:
         integrations.is_wandb_available = lambda: False
     if integration_utils is not None:
         integration_utils.is_wandb_available = lambda: False
+
+
+def _sync_gradient_checkpointing(model, enabled: bool) -> None:
+    """Keep Unsloth and Transformers gradient-checkpointing state aligned.
+
+    Unsloth's ``for_training`` helper toggles ``module.gradient_checkpointing``
+    booleans directly, but recent Transformers Mistral layers also expect
+    ``_gradient_checkpointing_func`` to exist whenever the flag is enabled.
+    This helper normalises both sides before ``trainer.train()`` starts.
+    """
+    try:
+        from torch.utils.checkpoint import checkpoint
+    except ImportError:
+        checkpoint = None
+
+    if enabled and hasattr(model, "gradient_checkpointing_enable"):
+        try:
+            model.gradient_checkpointing_enable()
+        except Exception:
+            logger.debug("gradient_checkpointing_enable() failed; using manual sync", exc_info=True)
+    elif not enabled and hasattr(model, "gradient_checkpointing_disable"):
+        try:
+            model.gradient_checkpointing_disable()
+        except Exception:
+            logger.debug("gradient_checkpointing_disable() failed; using manual sync", exc_info=True)
+
+    for module in model.modules():
+        if hasattr(module, "gradient_checkpointing"):
+            module.gradient_checkpointing = enabled
+            if enabled and checkpoint is not None and not hasattr(module, "_gradient_checkpointing_func"):
+                module._gradient_checkpointing_func = checkpoint
+
+    if hasattr(model, "gradient_checkpointing"):
+        model.gradient_checkpointing = enabled
+        if enabled and checkpoint is not None and not hasattr(model, "_gradient_checkpointing_func"):
+            model._gradient_checkpointing_func = checkpoint
 
 
 def _llama_cpp_install_dir() -> Path:
@@ -711,6 +747,7 @@ def apply_lora_adapters(
         _disable_problematic_wandb()
         try:
             from unsloth import FastLanguageModel
+            use_gc = "unsloth" if hyperparams.gradient_checkpointing else False
             model = FastLanguageModel.get_peft_model(
                 model,
                 r=hyperparams.lora_r,
@@ -718,9 +755,10 @@ def apply_lora_adapters(
                 lora_dropout=hyperparams.lora_dropout,
                 target_modules=target_modules,
                 bias="none",
-                use_gradient_checkpointing="unsloth",
+                use_gradient_checkpointing=use_gc,
                 random_state=42,
             )
+            _sync_gradient_checkpointing(model, hyperparams.gradient_checkpointing)
             console.print("[green]  LoRA adapters applied[/green]")
             return model
         except Exception as exc:
@@ -738,6 +776,7 @@ def apply_lora_adapters(
     )
 
     model = get_peft_model(model, lora_config)
+    _sync_gradient_checkpointing(model, hyperparams.gradient_checkpointing)
     model.print_trainable_parameters()
     console.print("[green]LoRA adapters applied.[/green]")
     return model
@@ -876,6 +915,13 @@ def train(
         args=training_args,
         train_dataset=tokenised_dataset,
     )
+
+    if hasattr(trainer.model, "for_training"):
+        try:
+            trainer.model.for_training(use_gradient_checkpointing=hp.gradient_checkpointing)
+        except Exception:
+            logger.debug("Unsloth for_training() sync failed", exc_info=True)
+    _sync_gradient_checkpointing(trainer.model, hp.gradient_checkpointing)
 
     console.print(Panel(
         f"[bold]Model[/bold]: {config.model_id}\n"
