@@ -21,7 +21,6 @@ from typing import Optional
 import fitz  # PyMuPDF
 from datasets import Dataset
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -235,33 +234,26 @@ class PDFProcessor:
         """
         fmt = data_format or self.data_format
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(),
-            TimeElapsedColumn(),
-            console=console,
-        ) as progress:
-            extract_task = progress.add_task("Extracting PDFs...", total=len(pdf_paths))
+        console.print(f"[cyan]Extracting text from {len(pdf_paths)} PDF(s)...[/cyan]")
 
-            all_chunks: list[Chunk] = []
-            for pdf_path in pdf_paths:
-                pages = extract_text_from_pdf(pdf_path)
-                for page_num, page_text in pages:
-                    text_chunks = chunk_text(
-                        page_text,
-                        chunk_size=self.chunk_size,
-                        overlap=self.overlap,
-                        min_chunk_size=self.min_chunk_size,
-                    )
-                    for idx, tc in enumerate(text_chunks):
-                        all_chunks.append(Chunk(
-                            text=tc,
-                            source=pdf_path.name,
-                            page=page_num,
-                            chunk_index=idx,
-                        ))
-                progress.advance(extract_task)
+        all_chunks: list[Chunk] = []
+        for pdf_path in pdf_paths:
+            logger.info("Extracting PDF: %s", pdf_path)
+            pages = extract_text_from_pdf(pdf_path)
+            for page_num, page_text in pages:
+                text_chunks = chunk_text(
+                    page_text,
+                    chunk_size=self.chunk_size,
+                    overlap=self.overlap,
+                    min_chunk_size=self.min_chunk_size,
+                )
+                for idx, tc in enumerate(text_chunks):
+                    all_chunks.append(Chunk(
+                        text=tc,
+                        source=pdf_path.name,
+                        page=page_num,
+                        chunk_index=idx,
+                    ))
 
         if not all_chunks:
             raise ValueError("No usable text extracted from the provided PDFs.")

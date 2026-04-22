@@ -7,6 +7,7 @@ from pathlib import Path
 
 import fitz  # PyMuPDF
 
+import tuxtrainer.pdf_processor as pdf_processor_module
 from tuxtrainer.pdf_processor import PDFProcessor, chunk_text, Chunk, DatasetStats
 
 
@@ -82,6 +83,24 @@ class TestPDFProcessor:
 
         assert "text" in dataset.column_names
         assert stats.format == "completion"
+
+    def test_process_with_minimal_console(self, tmp_path, monkeypatch):
+        pdf_path = _create_test_pdf(
+            "Console-independent PDF processing should still work.",
+            tmp_path / "test.pdf",
+        )
+
+        class StubConsole:
+            def print(self, *args, **kwargs):
+                return None
+
+        monkeypatch.setattr(pdf_processor_module, "console", StubConsole())
+
+        processor = PDFProcessor(chunk_size=256, data_format="instruction")
+        dataset, stats = processor.process([pdf_path])
+
+        assert len(dataset) > 0
+        assert stats.total_chunks > 0
 
     def test_process_to_jsonl(self, tmp_path):
         pdf_path = _create_test_pdf(
